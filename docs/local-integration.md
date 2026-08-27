@@ -25,6 +25,16 @@ make dev-deps
 
 服务默认监听 `http://127.0.0.1:9876`，健康检查为 `http://127.0.0.1:9876/healthz`。
 
+图片搜索调试流程：先在“文件管理”上传图片，再到“RPC 调用”选择
+`media.upload_image` 并选择图片。页面会把本地 `fileId` 写入 Payload，服务端下发设备前自动转换为
+现有 base64 图片协议；调用记录中只保存 `fileId`，不保存 base64。上传目录默认为
+`./data/uploads`，单张图片最大 12 MiB。
+
+`content.search_by_image` 也支持直接选择图片。没有 `uploadHandle` 时，管理端会自动先调用
+`media.upload_image`，严格读取设备返回的 `uploadHandle` 后再执行图片搜索；已有 handle 时则直接搜索。
+上传和搜索阶段使用独立 Trace ID。图片搜索记录可保留 `image.fileId` 作为审计上下文，但该辅助字段
+会在下发设备前移除，不改变设备既有协议。
+
 需要把 Go 服务也运行在 Docker 中时：
 
 ```bash

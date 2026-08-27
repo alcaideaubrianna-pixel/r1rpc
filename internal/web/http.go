@@ -2,15 +2,23 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"mime"
 	"net/http"
+	actiondefs "r1rpc/internal/actions"
 	"r1rpc/internal/app"
 	"r1rpc/internal/auth"
+	localfiles "r1rpc/internal/files"
 	"r1rpc/internal/model"
 	"r1rpc/internal/rpc"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +58,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/groups/{name}/api-key", s.requireRole("admin", s.handleRotateGroupAPIKey))
 	mux.HandleFunc("DELETE /api/groups/{name}", s.requireRole("admin", s.handleDeleteGroup))
 	mux.HandleFunc("GET /api/devices", s.requireRole("admin", s.handleDevices))
+	mux.HandleFunc("GET /api/files", s.requireRole("admin", s.handleFiles))
+	mux.HandleFunc("POST /api/files", s.requireRole("admin", s.handleFiles))
+	mux.HandleFunc("GET /api/files/{id}/content", s.requireRole("admin", s.handleFileContent))
+	mux.HandleFunc("DELETE /api/files/{id}", s.requireRole("admin", s.handleDeleteFile))
 	mux.HandleFunc("DELETE /api/devices/{clientId}", s.requireRole("admin", s.handleDeleteDevice))
 	mux.HandleFunc("GET /api/monitor/requests", s.requireRole("admin", s.handleMonitorRequests))
 	mux.HandleFunc("GET /api/monitor/request-options", s.requireRole("admin", s.handleMonitorRequestOptions))
@@ -348,7 +360,78 @@ func (s *Server) handleGroupActions(w http.ResponseWriter, r *http.Request, clai
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"actions": actions})
+	definitions := make([]actiondefs.Definition, 0, len(actions))
+	for _, action := range actions {
+		if definition, ok := actiondefs.Get(action); ok {
+			definitions = append(definitions, definition)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"actions": actions, "definitions": definitions})
+}
+
+func (s *Server) handleFiles(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	if r.Method == http.MethodGet {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		pageSize, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
+		items, total, err := s.App.Store.ListFiles(r.Context(), page, pageSize)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if page < 1 {
+			page = 1
+		}
+		if pageSize < 1 || pageSize > 100 {
+			pageSize = 20
+		}
+		writeJSON(w, http.StatusOK, model.FilePage{Items: items, Page: page, PageSize: pageSize, Total: total, TotalPages: int((total + int64(pageSize) - 1) / int64(pageSize))})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, localfiles.MaxImageBytes+(1<<20))
+	if err := r.ParseMultipartForm(localfiles.MaxImageBytes + (1 << 20)); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	_, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	item, err := s.App.Files.Save(r.Context(), header, claims.UserID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (s *Server) handleFileContent(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	item, file, err := s.App.Files.Open(r.Context(), r.PathValue("id"))
+	if err != nil {
+		if localfiles.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, err)
+		} else {
+			writeError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	defer file.Close()
+	w.Header().Set("Content-Type", item.ContentType)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": item.OriginalName}))
+	w.Header().Set("Content-Length", strconv.FormatInt(item.SizeBytes, 10))
+	_, _ = io.Copy(w, file)
+}
+
+func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	if err := s.App.Files.Delete(r.Context(), r.PathValue("id")); err != nil {
+		if localfiles.IsNotFound(err) || errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, err)
+		} else {
+			writeError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handlePatchGroupStatus(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
@@ -651,6 +734,12 @@ func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
 	if value := cleanDeviceHeader(r.Header.Get("X-OS-Version")); value != "" {
 		req.Extra["osVersion"] = value
 	}
+	if value := cleanDeviceHeader(r.Header.Get("X-SDK-Name")); value != "" {
+		req.Extra["sdkName"] = value
+	}
+	if value := cleanDeviceHeader(r.Header.Get("X-SDK-Version")); value != "" {
+		req.Extra["sdkVersion"] = value
+	}
 	actionsKnown := req.Actions != nil
 	var actions []string
 	if req.Actions != nil {
@@ -751,9 +840,19 @@ func validateClientConnectionClaims(claims *auth.Claims) error {
 }
 
 func (s *Server) handleInvoke(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	groupName := r.PathValue("group")
 	actionName := r.PathValue("action")
 	var req app.InvokeRequest
+	req.RequestID = strings.TrimSpace(r.Header.Get("X-Request-ID"))
+	if req.RequestID != "" && !requestIDPattern.MatchString(req.RequestID) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("X-Request-ID 格式无效"))
+		return
+	}
+	if req.RequestID == "" {
+		req.RequestID = newRequestID()
+	}
+	w.Header().Set("X-Request-ID", req.RequestID)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -767,7 +866,7 @@ func (s *Server) handleInvoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, _, actualClientID, err := s.App.InvokeRPC(r.Context(), claims, groupName, actionName, req)
+	result, requestID, actualClientID, err := s.App.InvokeRPC(r.Context(), claims, groupName, actionName, req)
 	if err != nil {
 		httpCode := http.StatusBadGateway
 		switch {
@@ -784,7 +883,7 @@ func (s *Server) handleInvoke(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, rpc.ErrClientQueueFull), errors.Is(err, rpc.ErrGroupSaturated):
 			httpCode = http.StatusTooManyRequests
 		}
-		writeEnvelope(w, httpCode, false, err.Error(), nil)
+		writeEnvelope(w, httpCode, false, err.Error(), map[string]any{"requestId": requestID, "clientId": actualClientID})
 		return
 	}
 	isOK := strings.EqualFold(result.Status, "success") && strings.TrimSpace(result.Error) == ""
@@ -801,6 +900,16 @@ func (s *Server) handleInvoke(w http.ResponseWriter, r *http.Request) {
 		resp["payload"] = devicePayload
 	}
 	writeEnvelope(w, http.StatusOK, isOK, result.Error, resp)
+}
+
+var requestIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{24,64}$`)
+
+func newRequestID() string {
+	bytes := make([]byte, 12)
+	if _, err := rand.Read(bytes); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(bytes)
 }
 
 // authenticateInvokeRequest 对外调用鉴权（鉴权模式按分组决定）：

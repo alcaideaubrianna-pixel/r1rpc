@@ -17,7 +17,7 @@ import (
 	"r1rpc/internal/rpc"
 )
 
-const wsMaxMessageBytes = 4 << 20
+const wsMaxMessageBytes = 20 << 20
 
 type wsEnvelope struct {
 	Type               string         `json:"type"`

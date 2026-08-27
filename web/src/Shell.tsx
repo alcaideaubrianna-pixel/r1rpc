@@ -9,6 +9,7 @@ import {
   RocketIcon,
   PersonIcon,
   ExitIcon,
+  FileIcon,
 } from '@radix-ui/react-icons'
 import { auth } from './auth'
 
@@ -19,6 +20,7 @@ const NAV = [
   { to: '/clients', label: '在线客户端', icon: <TargetIcon /> },
   { to: '/requests', label: '调用记录', icon: <ReaderIcon /> },
   { to: '/invoke', label: 'RPC 调用', icon: <RocketIcon /> },
+  { to: '/files', label: '文件管理', icon: <FileIcon /> },
   { to: '/users', label: '账号', icon: <PersonIcon /> },
 ]
 

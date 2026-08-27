@@ -730,6 +730,17 @@ func (s *Store) CompleteRPCRequest(ctx context.Context, item *model.RPCRequest) 
 	return err
 }
 
+func (s *Store) CreatePendingRPCRequest(ctx context.Context, item *model.RPCRequest) error {
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT INTO rpc_requests (
+			request_id, group_name, action_name, client_id, requester_user_id,
+			request_payload_json, status, http_code, latency_ms, error_message
+		) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 0, '')
+	`, item.RequestID, item.GroupName, item.ActionName, item.ClientID, item.RequesterUserID,
+		nullableJSON(item.RequestPayloadJSON))
+	return err
+}
+
 // metricCounts 把 status 映射成 (success, failed, timeout) 三个计数。
 func metricCounts(status string) (success, failed, timeoutCount int) {
 	switch status {
@@ -1351,12 +1362,16 @@ func (s *Store) ListDevices(ctx context.Context, groupName, clientID string, lim
 				DeviceModel   string `json:"deviceModel"`
 				OSName        string `json:"osName"`
 				OSVersion     string `json:"osVersion"`
+				SDKName       string `json:"sdkName"`
+				SDKVersion    string `json:"sdkVersion"`
 			}
 			if json.Unmarshal([]byte(item.ExtraJSON), &extra) == nil {
 				item.DeviceMachine = extra.DeviceMachine
 				item.DeviceModel = extra.DeviceModel
 				item.OSName = extra.OSName
 				item.OSVersion = extra.OSVersion
+				item.SDKName = extra.SDKName
+				item.SDKVersion = extra.SDKVersion
 			}
 		}
 		result = append(result, item)

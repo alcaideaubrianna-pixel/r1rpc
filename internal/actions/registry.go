@@ -19,34 +19,37 @@ type Definition struct {
 
 var registry = map[string]Definition{
 	"content.search_notes": {
-		Name: "content.search_notes",
+		Name:            "content.search_notes",
 		PayloadTemplate: map[string]any{"query": "", "limit": 20},
-		Inputs: []Input{{Path: "query", Type: "text", Label: "搜索词", Required: true}, {Path: "limit", Type: "number", Label: "数量"}},
+		Inputs:          []Input{{Path: "query", Type: "text", Label: "搜索词", Required: true}, {Path: "limit", Type: "number", Label: "数量"}},
 	},
 	"content.search": {
-		Name: "content.search",
+		Name:            "content.search",
 		PayloadTemplate: map[string]any{"query": "", "limit": 20},
-		Inputs: []Input{{Path: "query", Type: "text", Label: "搜索词", Required: true}, {Path: "limit", Type: "number", Label: "数量"}},
+		Inputs:          []Input{{Path: "query", Type: "text", Label: "搜索词", Required: true}, {Path: "limit", Type: "number", Label: "数量"}},
 	},
 	"media.upload_image": {
-		Name: "media.upload_image",
-		PayloadTemplate: map[string]any{"image": map[string]any{"fileId": ""}, "purpose": ""},
-		Inputs: []Input{{Path: "image.fileId", Type: "file", Label: "图片", Required: true, Accept: []string{"image/jpeg", "image/png", "image/heic", "image/heif"}}, {Path: "purpose", Type: "text", Label: "用途"}},
+		Name:            "media.upload_image",
+		PayloadTemplate: map[string]any{"image": map[string]any{"fileId": ""}, "purpose": "image_search"},
+		Inputs:          []Input{{Path: "image.fileId", Type: "file", Label: "图片", Required: true, Accept: []string{"image/jpeg", "image/png", "image/heic", "image/heif"}}, {Path: "purpose", Type: "text", Label: "用途"}},
 	},
 	"content.search_by_image": {
-		Name: "content.search_by_image",
-		PayloadTemplate: map[string]any{"image": map[string]any{"fileId": ""}},
-		Inputs: []Input{{Path: "image.fileId", Type: "file", Label: "搜索图片", Required: true, Accept: []string{"image/jpeg", "image/png", "image/heic", "image/heif"}}},
+		Name:            "content.search_by_image",
+		PayloadTemplate: map[string]any{"image": map[string]any{"fileId": ""}, "uploadHandle": "", "crop": map[string]any{"x": 0, "y": 0, "width": 1, "height": 1}, "limit": 20},
+		Inputs: []Input{
+			{Path: "image.fileId", Type: "file", Label: "搜索图片", Accept: []string{"image/jpeg", "image/png", "image/heic", "image/heif"}, Description: "选择图片时自动先执行 media.upload_image"},
+			{Path: "uploadHandle", Type: "text", Label: "上传句柄", Description: "已有上传句柄时可直接搜索"},
+		},
 	},
 	"diagnostics.image_search_native_probe": {
-		Name: "diagnostics.image_search_native_probe",
-		PayloadTemplate: map[string]any{"image": map[string]any{"fileId": ""}},
-		Inputs: []Input{{Path: "image.fileId", Type: "file", Label: "探测图片", Required: true, Accept: []string{"image/jpeg", "image/png", "image/heic", "image/heif"}}},
+		Name:            "diagnostics.image_search_native_probe",
+		PayloadTemplate: map[string]any{"uploadHandle": ""},
+		Inputs:          []Input{{Path: "uploadHandle", Type: "text", Label: "上传句柄", Required: true}},
 	},
 	"network.request": {
-		Name: "network.request",
+		Name:            "network.request",
 		PayloadTemplate: map[string]any{"url": "", "method": "GET", "headers": map[string]any{}, "body": ""},
-		Inputs: []Input{{Path: "url", Type: "text", Label: "URL", Required: true}, {Path: "method", Type: "text", Label: "方法"}},
+		Inputs:          []Input{{Path: "url", Type: "text", Label: "URL", Required: true}, {Path: "method", Type: "text", Label: "方法"}},
 	},
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 
 	"r1rpc/internal/auth"
 	"r1rpc/internal/config"
+	localfiles "r1rpc/internal/files"
 	"r1rpc/internal/model"
 	"r1rpc/internal/rpc"
 	"r1rpc/internal/store"
@@ -92,6 +94,7 @@ type App struct {
 	Store  *store.Store
 	Tokens *auth.TokenManager
 	Hub    *rpc.Hub
+	Files  *localfiles.Service
 
 	presenceMu        sync.Mutex
 	lastPresenceFlush map[string]time.Time
@@ -112,10 +115,11 @@ type App struct {
 }
 
 type InvokeRequest struct {
-	APIKey   string          `json:"apiKey"`
-	ClientID string          `json:"clientId"`
-	Payload  json.RawMessage `json:"payload"`
-	Timeout  int             `json:"timeoutSeconds"`
+	APIKey    string          `json:"apiKey"`
+	ClientID  string          `json:"clientId"`
+	Payload   json.RawMessage `json:"payload"`
+	Timeout   int             `json:"timeoutSeconds"`
+	RequestID string          `json:"-"`
 }
 
 const DeviceGroup = "XHS"
@@ -148,11 +152,16 @@ func New(cfg config.Config, st *store.Store) *App {
 	hub := rpc.NewHub(clientQueueSize, hubMaxInFlight)
 	hub.ConfigureExecutionPolicyWithGrace(cfg.QueueLeaseDuration, cfg.QueueLeaseReaperInterval, cfg.ExecutionGrace, cfg.ActionDefaultMaxInFlight)
 	hub.ConfigureQueueRetention(cfg.ClientQueueIdleTTL)
+	fileService, err := localfiles.New(cfg.Storage.LocalPath, st)
+	if err != nil {
+		panic(fmt.Sprintf("初始化本地文件存储失败: %v", err))
+	}
 	return &App{
 		Config:            &cfg,
 		Store:             st,
 		Tokens:            auth.NewTokenManager(cfg.JWTSecret),
 		Hub:               hub,
+		Files:             fileService,
 		lastPresenceFlush: map[string]time.Time{},
 		persistCh:         make(chan persistTask, queueSize),
 		persistAccepting:  true,
@@ -363,7 +372,11 @@ func (a *App) IssueClientConnectionToken(claims *auth.Claims, incarnation string
 }
 
 func (a *App) InvokeRPC(ctx context.Context, claims *auth.Claims, groupName, actionName string, req InvokeRequest) (rpc.JobResult, string, string, error) {
-	requestID := randomID()
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		requestID = randomID()
+	}
+	startedAt := time.Now()
 	groupName = strings.TrimSpace(groupName)
 	actionName = strings.TrimSpace(actionName)
 	if err := a.EnsureGroupActive(ctx, groupName); err != nil {
@@ -375,6 +388,10 @@ func (a *App) InvokeRPC(ctx context.Context, claims *auth.Claims, groupName, act
 	}
 
 	requestPayload := buildStoredInvokeRequest(req)
+	deliveryPayload, err := a.materializeInvokePayload(ctx, actionName, req.Payload)
+	if err != nil {
+		return rpc.JobResult{}, requestID, "", err
+	}
 	requestRecord := &model.RPCRequest{
 		RequestID:          requestID,
 		GroupName:          groupName,
@@ -387,6 +404,10 @@ func (a *App) InvokeRPC(ctx context.Context, claims *auth.Claims, groupName, act
 	if claims != nil {
 		requestRecord.RequesterUserID = &claims.UserID
 	}
+	if err := a.Store.CreatePendingRPCRequest(ctx, requestRecord); err != nil {
+		return rpc.JobResult{}, requestID, "", err
+	}
+	log.Printf("rpc_start request_id=%s group=%s action=%s preferred_client=%s", requestID, groupName, actionName, req.ClientID)
 
 	// 同步调用模型下不写 pending 行：完成时（成功/失败/超时）一次性落库。
 	baseTask := persistTask{
@@ -408,7 +429,7 @@ func (a *App) InvokeRPC(ctx context.Context, claims *auth.Claims, groupName, act
 		Group:      groupName,
 		Action:     actionName,
 		ClientID:   req.ClientID,
-		Payload:    req.Payload,
+		Payload:    deliveryPayload,
 		CreatedAt:  time.Now(),
 		DeadlineAt: time.Now().Add(timeout),
 	}
@@ -420,6 +441,9 @@ func (a *App) InvokeRPC(ctx context.Context, claims *auth.Claims, groupName, act
 	if actualClientID != "" {
 		requestRecord.ClientID = actualClientID
 		baseTask.ClientID = actualClientID
+	}
+	if actualClientID != "" {
+		log.Printf("rpc_dispatched request_id=%s client_id=%s", requestID, actualClientID)
 	}
 	if err != nil {
 		status := "timeout"
@@ -459,6 +483,7 @@ func (a *App) InvokeRPC(ctx context.Context, claims *auth.Claims, groupName, act
 			Status:     status,
 			LatencyMS:  0,
 		})
+		log.Printf("rpc_finish request_id=%s status=%s client_id=%s duration_ms=%d error=%q", requestID, status, usedClientID, time.Since(startedAt).Milliseconds(), err.Error())
 		return rpc.JobResult{}, requestID, usedClientID, err
 	}
 
@@ -486,7 +511,49 @@ func (a *App) InvokeRPC(ctx context.Context, claims *auth.Claims, groupName, act
 		Status:     result.Status,
 		LatencyMS:  result.LatencyMS,
 	})
+	log.Printf("rpc_finish request_id=%s status=%s client_id=%s duration_ms=%d", requestID, result.Status, requestRecord.ClientID, time.Since(startedAt).Milliseconds())
 	return result, requestID, requestRecord.ClientID, nil
+}
+
+func (a *App) materializeInvokePayload(ctx context.Context, actionName string, payload json.RawMessage) (json.RawMessage, error) {
+	if actionName == "content.search_by_image" {
+		var object map[string]any
+		if err := json.Unmarshal(payload, &object); err != nil {
+			return nil, fmt.Errorf("解析图片搜索 payload: %w", err)
+		}
+		// image.fileId 仅用于管理端审计和自动上传，不属于设备图片搜索协议。
+		delete(object, "image")
+		return json.Marshal(object)
+	}
+	if actionName != "media.upload_image" {
+		return payload, nil
+	}
+	var object map[string]any
+	if err := json.Unmarshal(payload, &object); err != nil {
+		return nil, fmt.Errorf("解析图片上传 payload: %w", err)
+	}
+	image, ok := object["image"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("payload.image 不能为空")
+	}
+	fileID, _ := image["fileId"].(string)
+	if strings.TrimSpace(fileID) == "" {
+		return nil, fmt.Errorf("payload.image.fileId 不能为空")
+	}
+	item, data, err := a.Files.Read(ctx, fileID)
+	if err != nil {
+		return nil, fmt.Errorf("读取上传图片: %w", err)
+	}
+	object["image"] = map[string]any{
+		"encoding": "base64",
+		"mimeType": item.ContentType,
+		"data":     base64.StdEncoding.EncodeToString(data),
+	}
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return nil, err
+	}
+	return encoded, nil
 }
 
 func buildStoredInvokeResponse(requestID, groupName, actionName, clientID string, requestPayload json.RawMessage, result rpc.JobResult) string {

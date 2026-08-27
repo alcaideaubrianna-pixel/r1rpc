@@ -64,6 +64,9 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
 export const get = <T>(url: string) => request<T>(url)
 export const post = <T>(url: string, body?: unknown) =>
   request<T>(url, { method: 'POST', body: body != null ? JSON.stringify(body) : undefined })
+export const postWithHeaders = <T>(url: string, body: unknown, headers: Record<string, string>) =>
+  request<T>(url, { method: 'POST', headers, body: JSON.stringify(body) })
+export const upload = <T>(url: string, body: FormData) => request<T>(url, { method: 'POST', body })
 export const patch = <T>(url: string, body?: unknown) =>
   request<T>(url, { method: 'PATCH', body: body != null ? JSON.stringify(body) : undefined })
 export const del = <T>(url: string) => request<T>(url, { method: 'DELETE' })

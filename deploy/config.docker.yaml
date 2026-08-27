@@ -16,6 +16,10 @@ mysql:
   password: "r1rpc_dev"
   db: "r1rpc"
 
+storage:
+  backend: "file"
+  local_path: "/app/data/uploads"
+
 # Redis 由 docker-compose 启动，供本地联调检查；当前 r1rpc 队列仍使用已有内存实现，
 # 因此这里不配置未使用的 Redis 队列后端。
 

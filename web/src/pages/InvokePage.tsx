@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Flex,
   Box,
@@ -14,12 +14,12 @@ import {
   Callout,
 } from '@radix-ui/themes'
 import { RocketIcon } from '@radix-ui/react-icons'
-import { get, post, ApiError } from '../api/client'
+import { get, postWithHeaders, upload, ApiError } from '../api/client'
 import { useFetch } from '../lib/useFetch'
 import { notify } from '../lib/toast'
 import { cnError } from '../lib/errors'
 import { prettyJson } from '../lib/format'
-import type { GroupInfo, Device } from '../types'
+import type { ActionDefinition, GroupInfo, Device, StoredFile } from '../types'
 
 interface Result {
   ok: boolean
@@ -28,6 +28,7 @@ interface Result {
 }
 
 export default function InvokePage() {
+  const imageInputRef = useRef<HTMLInputElement>(null)
   const groupsR = useFetch(() => get<{ items: GroupInfo[] }>('/api/groups'))
   const groups = groupsR.data?.items ?? []
   const devicesR = useFetch(() => get<{ items: Device[] }>('/api/devices'))
@@ -41,7 +42,12 @@ export default function InvokePage() {
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<Result | null>(null)
   const [actionOptions, setActionOptions] = useState<string[]>([])
+  const [definitions, setDefinitions] = useState<Record<string, ActionDefinition>>({})
   const [customAction, setCustomAction] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [selectedFile, setSelectedFile] = useState<StoredFile | null>(null)
+  const [traceId, setTraceId] = useState('')
+  const [uploadTraceId, setUploadTraceId] = useState('')
 
   const effGroup = group || groups[0]?.group || ''
 
@@ -55,17 +61,50 @@ export default function InvokePage() {
     setAction('')
     setCustomAction(false)
     setClientId('')
-    get<{ actions: string[] }>(`/api/groups/${encodeURIComponent(effGroup)}/actions`)
+    get<{ actions: string[]; definitions: ActionDefinition[] }>(`/api/groups/${encodeURIComponent(effGroup)}/actions`)
       .then((d) => {
-        if (alive) setActionOptions(d.actions || [])
+        if (alive) {
+          setActionOptions(d.actions || [])
+          setDefinitions(Object.fromEntries((d.definitions || []).map((item) => [item.name, item])))
+        }
       })
       .catch(() => {
-        if (alive) setActionOptions([])
+        if (alive) { setActionOptions([]); setDefinitions({}) }
       })
     return () => {
       alive = false
     }
   }, [effGroup])
+
+  const definition = definitions[action]
+  const fileInput = definition?.inputs.find((input) => input.type === 'file')
+
+  function selectAction(value: string) {
+    setAction(value)
+    setSelectedFile(null)
+    setUploadTraceId('')
+    setPayload(JSON.stringify(definitions[value]?.payloadTemplate ?? {}, null, 2))
+  }
+
+  async function uploadImage(file?: File) {
+    if (!file || !fileInput) return
+    const body = new FormData()
+    body.append('file', file)
+    setUploading(true)
+    try {
+      const stored = await upload<StoredFile>('/api/files', body)
+      let next: Record<string, unknown> = {}
+      try { next = JSON.parse(payload || '{}') as Record<string, unknown> } catch { /* reset below */ }
+      setPath(next, fileInput.path, stored.id)
+      setPayload(JSON.stringify(next, null, 2))
+      setSelectedFile(stored)
+      notify.success('图片上传成功')
+    } catch (error) {
+      notify.error(error, '图片上传失败')
+    } finally {
+      setUploading(false)
+    }
+  }
 
   // 鉴权模式取自所选分组
   const curGroup = groups.find((g) => g.group === effGroup)
@@ -85,7 +124,7 @@ export default function InvokePage() {
     try { parsed = JSON.parse(payload || '{}') } catch { /* 不合法时用空对象 */ }
     const body = JSON.stringify({ payload: parsed, timeoutSeconds: Number(timeout) || 15 })
     return `curl -X POST "${base}/rpc/${g}/${a}"${keyHeader} \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`
-  }, [effGroup, action, payload, mode, apiKey, timeout])
+  }, [effGroup, action, payload, mode, apiKey, timeout, traceId])
 
   async function invoke() {
     if (!effGroup) {
@@ -96,10 +135,10 @@ export default function InvokePage() {
       notify.error('请输入 action')
       return
     }
-    let parsed: unknown = {}
+    let parsed: Record<string, unknown> = {}
     if (payload.trim()) {
       try {
-        parsed = JSON.parse(payload)
+        parsed = JSON.parse(payload) as Record<string, unknown>
       } catch {
         notify.error('payload 不是合法 JSON')
         return
@@ -107,13 +146,30 @@ export default function InvokePage() {
     }
     setRunning(true)
     setResult(null)
+    const currentTraceId = createTraceId()
+    setTraceId(currentTraceId)
+    setUploadTraceId('')
     try {
-      const body: Record<string, unknown> = { payload: parsed, timeoutSeconds: Number(timeout) || 15 }
-      if (clientId.trim()) body.clientId = clientId.trim()
-      const data = await post<unknown>(
-        `/rpc/${encodeURIComponent(effGroup)}/${encodeURIComponent(action.trim())}`,
-        body,
-      )
+      if (action === 'content.search_by_image') {
+        const existingHandle = typeof parsed.uploadHandle === 'string' ? parsed.uploadHandle.trim() : ''
+        const image = isRecord(parsed.image) ? parsed.image : {}
+        const fileId = typeof image.fileId === 'string' ? image.fileId.trim() : ''
+        if (!existingHandle) {
+          if (!fileId) throw new Error('请选择图片，或填写已有的 uploadHandle')
+          const currentUploadTraceId = createTraceId()
+          setUploadTraceId(currentUploadTraceId)
+          const uploadData = await invokeAction<Record<string, unknown>>(
+            'media.upload_image',
+            { image: { fileId }, purpose: 'image_search' },
+            currentUploadTraceId,
+          )
+          const uploadHandle = typeof uploadData.uploadHandle === 'string' ? uploadData.uploadHandle.trim() : ''
+          if (!uploadHandle) throw new Error('media.upload_image 未返回有效 uploadHandle')
+          parsed = { ...parsed, uploadHandle }
+          setPayload(JSON.stringify(parsed, null, 2))
+        }
+      }
+      const data = await invokeAction<unknown>(action.trim(), parsed, currentTraceId)
       setResult({ ok: true, data })
       notify.success('调用成功')
     } catch (e) {
@@ -123,6 +179,16 @@ export default function InvokePage() {
     } finally {
       setRunning(false)
     }
+  }
+
+  async function invokeAction<T>(actionName: string, actionPayload: unknown, requestId: string) {
+    const body: Record<string, unknown> = { payload: actionPayload, timeoutSeconds: Number(timeout) || 15 }
+    if (clientId.trim()) body.clientId = clientId.trim()
+    return postWithHeaders<T>(
+      `/rpc/${encodeURIComponent(effGroup)}/${encodeURIComponent(actionName)}`,
+      body,
+      { 'X-Request-ID': requestId },
+    )
   }
 
   return (
@@ -170,8 +236,10 @@ export default function InvokePage() {
                       if (v === '__custom__') {
                         setCustomAction(true)
                         setAction('')
+                        setPayload('{}')
+                        setSelectedFile(null)
                       } else {
-                        setAction(v)
+                        selectAction(v)
                       }
                     }}
                   >
@@ -228,6 +296,16 @@ export default function InvokePage() {
                 <TextField.Root type="number" value={timeout} onChange={(e) => setTimeoutS(e.target.value)} />
               </label>
             </Grid>
+            {fileInput && (
+              <label>
+                <Text size="2" mb="1" as="div" weight="medium">{fileInput.label}</Text>
+                <Flex gap="3" align="center">
+                  <input ref={imageInputRef} hidden type="file" accept={(fileInput.accept || []).join(',')} onChange={(e) => uploadImage(e.target.files?.[0])} />
+                  <Button variant="soft" loading={uploading} onClick={() => imageInputRef.current?.click()}>选择图片</Button>
+                  <Text size="2" color="gray">{selectedFile ? `${selectedFile.originalName} · ${formatBytes(selectedFile.sizeBytes)}` : '尚未选择'}</Text>
+                </Flex>
+              </label>
+            )}
             <label>
               <Text size="2" mb="1" as="div" weight="medium">
                 Payload (JSON)
@@ -242,6 +320,8 @@ export default function InvokePage() {
             <Button onClick={invoke} loading={running}>
               <RocketIcon /> 发起调用
             </Button>
+            {uploadTraceId && <Text size="1" color="gray">图片上传 Trace ID: <code>{uploadTraceId}</code></Text>}
+            {traceId && <Text size="1" color="gray">调用 Trace ID: <code>{traceId}</code></Text>}
             <Box>
               <Text size="1" color="gray" mb="1" as="div">
                 curl 示例
@@ -310,4 +390,27 @@ export default function InvokePage() {
       </Grid>
     </Flex>
   )
+}
+
+function setPath(target: Record<string, unknown>, path: string, value: unknown) {
+  const parts = path.split('.')
+  let current = target
+  parts.forEach((part, index) => {
+    if (index === parts.length - 1) { current[part] = value; return }
+    const next = current[part]
+    if (!next || typeof next !== 'object' || Array.isArray(next)) current[part] = {}
+    current = current[part] as Record<string, unknown>
+  })
+}
+
+function formatBytes(bytes: number) {
+  return bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KiB` : `${(bytes / 1024 / 1024).toFixed(1)} MiB`
+}
+
+function createTraceId() {
+  return crypto.randomUUID().replaceAll('-', '')
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
 }

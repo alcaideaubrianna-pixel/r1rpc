@@ -26,6 +26,10 @@ mysql:
   max_idle_conns: 8
   conn_max_lifetime_minutes: 10
 
+storage:
+  backend: "file"
+  local_path: "./data/uploads"
+
 limits:
   request_timeout_seconds: 25     # 单次调用超时
   client_max_in_flight: 1         # 单设备同时在途请求数，可按设备和action策略提高

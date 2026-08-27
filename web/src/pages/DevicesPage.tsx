@@ -55,6 +55,7 @@ export default function DevicesPage() {
                 <Table.ColumnHeaderCell>分组</Table.ColumnHeaderCell>
                 <Table.ColumnHeaderCell>设备型号</Table.ColumnHeaderCell>
                 <Table.ColumnHeaderCell>系统版本</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>SDK 版本</Table.ColumnHeaderCell>
                 <Table.ColumnHeaderCell>状态</Table.ColumnHeaderCell>
                 <Table.ColumnHeaderCell>最后在线</Table.ColumnHeaderCell>
                 <Table.ColumnHeaderCell>IP</Table.ColumnHeaderCell>
@@ -77,6 +78,7 @@ export default function DevicesPage() {
                     </Flex>
                   </Table.Cell>
                   <Table.Cell>{[d.osName, d.osVersion].filter(Boolean).join(' ') || '—'}</Table.Cell>
+                  <Table.Cell>{[d.sdkName, d.sdkVersion].filter(Boolean).join(' ') || '—'}</Table.Cell>
                   <Table.Cell>
                     <Badge color={d.status === 'online' ? 'green' : 'gray'} variant="soft">
                       {d.status === 'online' ? '在线' : '离线'}
@@ -99,7 +101,7 @@ export default function DevicesPage() {
               ))}
               {devices.length === 0 && (
                 <Table.Row>
-                  <Table.Cell colSpan={8}>
+                  <Table.Cell colSpan={9}>
                     <Text color="gray">暂无设备</Text>
                   </Table.Cell>
                 </Table.Row>

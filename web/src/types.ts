@@ -45,9 +45,35 @@ export interface Device {
   deviceModel: string
   osName: string
   osVersion: string
+  sdkName: string
+  sdkVersion: string
   actions: string[]
   createdAt: string
   updatedAt: string
+}
+
+export interface StoredFile {
+  id: string
+  originalName: string
+  contentType: string
+  sizeBytes: number
+  sha256: string
+  status: string
+  createdAt: string
+}
+
+export interface ActionInput {
+  path: string
+  type: string
+  label: string
+  required: boolean
+  accept?: string[]
+}
+
+export interface ActionDefinition {
+  name: string
+  payloadTemplate: Record<string, unknown>
+  inputs: ActionInput[]
 }
 
 export interface RpcRequest {

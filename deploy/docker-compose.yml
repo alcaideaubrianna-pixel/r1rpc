@@ -45,6 +45,7 @@ services:
         condition: service_healthy
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
+      - r1rpc-uploads:/app/data/uploads
     environment:
       APP_NAME: ${APP_NAME:-r1rpc}
       SERVER_ID: ${SERVER_ID:-r1rpc-local-1}
@@ -70,3 +71,4 @@ services:
 volumes:
   r1rpc-mysql-data:
   r1rpc-redis-data:
+  r1rpc-uploads:

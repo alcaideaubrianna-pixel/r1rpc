@@ -10,6 +10,7 @@ import ClientsPage from './pages/ClientsPage'
 import RequestsPage from './pages/RequestsPage'
 import InvokePage from './pages/InvokePage'
 import UsersPage from './pages/UsersPage'
+import FilesPage from './pages/FilesPage'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const loc = useLocation()
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="clients" element={<ClientsPage />} />
         <Route path="requests" element={<RequestsPage />} />
         <Route path="invoke" element={<InvokePage />} />
+        <Route path="files" element={<FilesPage />} />
         <Route path="users" element={<UsersPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/overview" replace />} />
