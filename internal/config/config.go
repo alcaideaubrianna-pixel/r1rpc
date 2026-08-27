@@ -39,6 +39,14 @@ var yamlToEnvKey = []struct {
 	{"mysql", "max_open_conns", "MYSQL_MAX_OPEN_CONNS"},
 	{"mysql", "max_idle_conns", "MYSQL_MAX_IDLE_CONNS"},
 	{"mysql", "conn_max_lifetime_minutes", "MYSQL_CONN_MAX_LIFETIME_MINUTES"},
+	{"storage", "backend", "STORAGE_BACKEND"},
+	{"storage", "local_path", "STORAGE_LOCAL_PATH"},
+	{"storage", "endpoint", "STORAGE_S3_ENDPOINT"},
+	{"storage", "region", "STORAGE_S3_REGION"},
+	{"storage", "bucket", "STORAGE_S3_BUCKET"},
+	{"storage", "path_style", "STORAGE_S3_PATH_STYLE"},
+	{"storage", "access_key", "STORAGE_S3_ACCESS_KEY"},
+	{"storage", "secret_key", "STORAGE_S3_SECRET_KEY"},
 	{"limits", "request_timeout_seconds", "REQUEST_TIMEOUT_SECONDS"},
 	{"limits", "raw_retention_days", "RAW_RETENTION_DAYS"},
 	{"limits", "raw_request_keep_latest_per_scope", "RAW_REQUEST_KEEP_LATEST_PER_SCOPE"},
@@ -50,7 +58,12 @@ var yamlToEnvKey = []struct {
 	{"limits", "persist_queue_size", "PERSIST_QUEUE_SIZE"},
 	{"limits", "persist_workers", "PERSIST_WORKERS"},
 	{"limits", "client_queue_size", "CLIENT_QUEUE_SIZE"},
+	{"limits", "client_queue_idle_ttl_seconds", "CLIENT_QUEUE_IDLE_TTL_SECONDS"},
 	{"limits", "client_max_in_flight", "CLIENT_MAX_IN_FLIGHT"},
+	{"limits", "queue_lease_duration_seconds", "QUEUE_LEASE_DURATION_SECONDS"},
+	{"limits", "queue_lease_reaper_interval_seconds", "QUEUE_LEASE_REAPER_INTERVAL_SECONDS"},
+	{"limits", "execution_grace_seconds", "EXECUTION_GRACE_SECONDS"},
+	{"limits", "action_default_max_in_flight", "ACTION_DEFAULT_MAX_IN_FLIGHT"},
 }
 
 type Config struct {
@@ -69,11 +82,17 @@ type Config struct {
 	PersistQueueSize         int
 	PersistWorkers           int
 	ClientQueueSize          int
+	ClientQueueIdleTTL       time.Duration
 	ClientMaxInFlight        int
+	QueueLeaseDuration       time.Duration
+	QueueLeaseReaperInterval time.Duration
+	ExecutionGrace           time.Duration
+	ActionDefaultMaxInFlight int
 	TimeZone                 string
 	BootstrapAdminUser       string
 	BootstrapAdminPass       string
 	MySQL                    MySQLConfig
+	Storage                  StorageConfig
 }
 
 type MySQLConfig struct {
@@ -86,6 +105,17 @@ type MySQLConfig struct {
 	MaxOpenConns           int
 	MaxIdleConns           int
 	ConnMaxLifetimeMinutes int
+}
+
+type StorageConfig struct {
+	Backend   string
+	LocalPath string
+	Endpoint  string
+	Region    string
+	Bucket    string
+	PathStyle bool
+	AccessKey string
+	SecretKey string
 }
 
 func Load() (Config, error) {
@@ -110,7 +140,12 @@ func Load() (Config, error) {
 		PersistQueueSize:         getInt(values, "PERSIST_QUEUE_SIZE", 4096),
 		PersistWorkers:           getInt(values, "PERSIST_WORKERS", 2),
 		ClientQueueSize:          getInt(values, "CLIENT_QUEUE_SIZE", 256),
-		ClientMaxInFlight:        getInt(values, "CLIENT_MAX_IN_FLIGHT", 8),
+		ClientQueueIdleTTL:       time.Duration(getInt(values, "CLIENT_QUEUE_IDLE_TTL_SECONDS", 600)) * time.Second,
+		ClientMaxInFlight:        getInt(values, "CLIENT_MAX_IN_FLIGHT", 1),
+		QueueLeaseDuration:       time.Duration(getInt(values, "QUEUE_LEASE_DURATION_SECONDS", 10)) * time.Second,
+		QueueLeaseReaperInterval: time.Duration(getInt(values, "QUEUE_LEASE_REAPER_INTERVAL_SECONDS", 1)) * time.Second,
+		ExecutionGrace:           time.Duration(getInt(values, "EXECUTION_GRACE_SECONDS", 30)) * time.Second,
+		ActionDefaultMaxInFlight: getInt(values, "ACTION_DEFAULT_MAX_IN_FLIGHT", 1),
 		TimeZone:                 getString(values, "TIME_ZONE", "Asia/Shanghai"),
 		BootstrapAdminUser:       getString(values, "BOOTSTRAP_ADMIN_USERNAME", "admin"),
 		BootstrapAdminPass:       getString(values, "BOOTSTRAP_ADMIN_PASSWORD", ""),
@@ -124,6 +159,16 @@ func Load() (Config, error) {
 			MaxOpenConns:           getInt(values, "MYSQL_MAX_OPEN_CONNS", 32),
 			MaxIdleConns:           getInt(values, "MYSQL_MAX_IDLE_CONNS", 8),
 			ConnMaxLifetimeMinutes: getInt(values, "MYSQL_CONN_MAX_LIFETIME_MINUTES", 10),
+		},
+		Storage: StorageConfig{
+			Backend:   strings.ToLower(getString(values, "STORAGE_BACKEND", "file")),
+			LocalPath: getString(values, "STORAGE_LOCAL_PATH", "./data/uploads"),
+			Endpoint:  getString(values, "STORAGE_S3_ENDPOINT", ""),
+			Region:    getString(values, "STORAGE_S3_REGION", "us-east-1"),
+			Bucket:    getString(values, "STORAGE_S3_BUCKET", ""),
+			PathStyle: getBool(values, "STORAGE_S3_PATH_STYLE", true),
+			AccessKey: getString(values, "STORAGE_S3_ACCESS_KEY", ""),
+			SecretKey: getString(values, "STORAGE_S3_SECRET_KEY", ""),
 		},
 	}
 
@@ -182,8 +227,23 @@ func Load() (Config, error) {
 	if cfg.ClientQueueSize < 64 {
 		cfg.ClientQueueSize = 64
 	}
+	if cfg.ClientQueueIdleTTL <= 0 {
+		cfg.ClientQueueIdleTTL = 10 * time.Minute
+	}
 	if cfg.ClientMaxInFlight < 1 {
 		cfg.ClientMaxInFlight = 1
+	}
+	if cfg.QueueLeaseDuration <= 0 {
+		cfg.QueueLeaseDuration = 10 * time.Second
+	}
+	if cfg.QueueLeaseReaperInterval <= 0 {
+		cfg.QueueLeaseReaperInterval = time.Second
+	}
+	if cfg.ExecutionGrace <= 0 {
+		cfg.ExecutionGrace = 30 * time.Second
+	}
+	if cfg.ActionDefaultMaxInFlight < 1 {
+		cfg.ActionDefaultMaxInFlight = 1
 	}
 	if cfg.MySQL.MaxOpenConns < 4 {
 		cfg.MySQL.MaxOpenConns = 4
@@ -197,7 +257,38 @@ func Load() (Config, error) {
 	if cfg.TimeZone == "" {
 		cfg.TimeZone = "Asia/Shanghai"
 	}
+	if cfg.Storage.Backend != "file" && cfg.Storage.Backend != "s3" {
+		return Config{}, fmt.Errorf("%s 中 STORAGE_BACKEND 仅支持 file 或 s3", path)
+	}
+	if cfg.Storage.Backend == "file" && strings.TrimSpace(cfg.Storage.LocalPath) == "" {
+		cfg.Storage.LocalPath = "./data/uploads"
+	}
+	if cfg.Storage.Backend == "s3" && strings.TrimSpace(cfg.Storage.Bucket) == "" {
+		return Config{}, fmt.Errorf("%s 中 S3 存储必须配置 STORAGE_S3_BUCKET", path)
+	}
+	if err := cfg.ValidateExecutionTiming(); err != nil {
+		return Config{}, fmt.Errorf("%s 中执行时序配置无效: %w", path, err)
+	}
 	return cfg, nil
+}
+
+func (c Config) ValidateExecutionTiming() error {
+	if c.RequestTimeout <= 0 {
+		return fmt.Errorf("request timeout must be positive")
+	}
+	if c.QueueLeaseDuration <= 0 {
+		return fmt.Errorf("queue lease duration must be positive")
+	}
+	if c.QueueLeaseReaperInterval <= 0 || c.QueueLeaseReaperInterval >= c.QueueLeaseDuration {
+		return fmt.Errorf("queue lease reaper interval must be positive and below queue lease duration")
+	}
+	if c.QueueLeaseDuration > c.RequestTimeout {
+		return fmt.Errorf("queue lease duration must not exceed request timeout")
+	}
+	if c.ExecutionGrace < c.QueueLeaseReaperInterval {
+		return fmt.Errorf("execution grace must be at least the queue lease reaper interval")
+	}
+	return nil
 }
 
 func (c Config) MySQLDSN(withoutDB bool) string {
@@ -309,6 +400,21 @@ func getInt(values map[string]string, key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func getBool(values map[string]string, key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		raw = strings.TrimSpace(values[key])
+	}
+	if raw == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func minInt(a, b int) int {

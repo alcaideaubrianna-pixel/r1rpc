@@ -28,7 +28,11 @@ mysql:
 
 limits:
   request_timeout_seconds: 25     # 单次调用超时
-  client_max_in_flight: 8         # 单设备同时在途请求数
+  client_max_in_flight: 1         # 单设备同时在途请求数，可按设备和action策略提高
+  action_default_max_in_flight: 1 # 未提供结构化action上限时的安全默认值
+  queue_lease_duration_seconds: 10        # dispatch reservation租约；等待槽位时会安全续租
+  queue_lease_reaper_interval_seconds: 1  # reservation与execution lease集中回收周期
+  execution_grace_seconds: 30             # execution至少保留到acquire时间+grace，且不早于job deadline
   device_offline_seconds: 20      # 多久没心跳判离线
   heartbeat_interval_seconds: 5
   # 数据保留
@@ -39,3 +43,4 @@ limits:
   persist_queue_size: 4096
   persist_workers: 2
   client_queue_size: 256
+  client_queue_idle_ttl_seconds: 600

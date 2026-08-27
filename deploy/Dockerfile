@@ -11,4 +11,6 @@ RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 COPY --from=build /out/r1rpc-server /app/r1rpc-server
 EXPOSE 9876
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=12 \
+  CMD wget -q -O - http://127.0.0.1:9876/healthz || exit 1
 ENTRYPOINT ["/app/r1rpc-server"]

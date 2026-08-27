@@ -39,21 +39,21 @@
 
 ## 快速开始
 
-### 方式一：Docker（推荐）
+### 方式一：本地开发（推荐）
 
 ```bash
-# 1. 改配置（compose 会把它挂载进容器作为 config.yaml）
-#    生产务必修改 jwt_secret / admin.password / mysql.password
-vim deploy/config.docker.yaml
-
-# 2. 一键起 服务 + MySQL
-docker compose -f deploy/docker-compose.yml up -d --build
+# Docker 启动 MySQL/Redis，Air 在宿主机热重载 Go 服务
+make dev
 ```
 
 启动后：
 
 - 面板与接口：`http://localhost:9876`
-- 服务首次启动会自动建库建表，并按配置里的 `admin.username` / `admin.password` 创建后台管理员。
+- 默认本地管理员：`admin / 123456`。
+- 修改 Go 文件后自动重新编译并重启。
+
+完整容器模式使用 `make dev-full`。启动、端口覆盖、真机访问和日志说明见
+[`docs/local-integration.md`](docs/local-integration.md)。
 
 ### 方式二：从源码运行
 
@@ -90,7 +90,11 @@ mysql:
 
 limits:
   request_timeout_seconds: 25  # 单次调用超时
-  client_max_in_flight: 8      # 单设备同时在途请求数
+  client_max_in_flight: 1      # 单设备同时在途请求数，可按策略提高
+  action_default_max_in_flight: 1
+  queue_lease_duration_seconds: 10
+  queue_lease_reaper_interval_seconds: 1
+  execution_grace_seconds: 30
   device_offline_seconds: 20   # 多久无心跳判离线
 ```
 

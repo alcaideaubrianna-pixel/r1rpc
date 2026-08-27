@@ -53,7 +53,8 @@ export default function DevicesPage() {
               <Table.Row>
                 <Table.ColumnHeaderCell>客户端 ID</Table.ColumnHeaderCell>
                 <Table.ColumnHeaderCell>分组</Table.ColumnHeaderCell>
-                <Table.ColumnHeaderCell>平台</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>设备型号</Table.ColumnHeaderCell>
+                <Table.ColumnHeaderCell>系统版本</Table.ColumnHeaderCell>
                 <Table.ColumnHeaderCell>状态</Table.ColumnHeaderCell>
                 <Table.ColumnHeaderCell>最后在线</Table.ColumnHeaderCell>
                 <Table.ColumnHeaderCell>IP</Table.ColumnHeaderCell>
@@ -67,7 +68,15 @@ export default function DevicesPage() {
                     <Code variant="ghost">{d.clientId}</Code>
                   </Table.RowHeaderCell>
                   <Table.Cell>{d.group}</Table.Cell>
-                  <Table.Cell>{d.platform || '—'}</Table.Cell>
+                  <Table.Cell>
+                    <Flex direction="column" gap="1">
+                      <Text size="2">{d.deviceModel || d.deviceMachine || '—'}</Text>
+                      {d.deviceMachine && d.deviceModel !== d.deviceMachine && (
+                        <Text size="1" color="gray">{d.deviceMachine}</Text>
+                      )}
+                    </Flex>
+                  </Table.Cell>
+                  <Table.Cell>{[d.osName, d.osVersion].filter(Boolean).join(' ') || '—'}</Table.Cell>
                   <Table.Cell>
                     <Badge color={d.status === 'online' ? 'green' : 'gray'} variant="soft">
                       {d.status === 'online' ? '在线' : '离线'}
@@ -90,7 +99,7 @@ export default function DevicesPage() {
               ))}
               {devices.length === 0 && (
                 <Table.Row>
-                  <Table.Cell colSpan={7}>
+                  <Table.Cell colSpan={8}>
                     <Text color="gray">暂无设备</Text>
                   </Table.Cell>
                 </Table.Row>

@@ -97,6 +97,18 @@ type App struct {
 	lastPresenceFlush map[string]time.Time
 	persistCh         chan persistTask
 	ProbeHistory      *probeHistory
+
+	lifecycleMu        sync.Mutex
+	backgroundCancel   context.CancelFunc
+	backgroundWG       sync.WaitGroup
+	closed             bool
+	persistMu          sync.RWMutex
+	persistAccepting   bool
+	persistWorkers     sync.WaitGroup
+	persistProducers   sync.WaitGroup
+	persistBatchRunner func([]persistTask) error
+	closeOnce          sync.Once
+	closeErr           error
 }
 
 type InvokeRequest struct {
@@ -104,6 +116,20 @@ type InvokeRequest struct {
 	ClientID string          `json:"clientId"`
 	Payload  json.RawMessage `json:"payload"`
 	Timeout  int             `json:"timeoutSeconds"`
+}
+
+const DeviceGroup = "XHS"
+
+func (a *App) EnsureDeviceGroup(ctx context.Context) error {
+	_, err := a.Store.GetGroupByName(ctx, DeviceGroup)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	_, err = a.Store.CreateGroup(ctx, DeviceGroup, "XHS", "none", true, "iOS devices")
+	return err
 }
 
 func New(cfg config.Config, st *store.Store) *App {
@@ -119,32 +145,51 @@ func New(cfg config.Config, st *store.Store) *App {
 	if hubMaxInFlight < 1 {
 		hubMaxInFlight = 1
 	}
+	hub := rpc.NewHub(clientQueueSize, hubMaxInFlight)
+	hub.ConfigureExecutionPolicyWithGrace(cfg.QueueLeaseDuration, cfg.QueueLeaseReaperInterval, cfg.ExecutionGrace, cfg.ActionDefaultMaxInFlight)
+	hub.ConfigureQueueRetention(cfg.ClientQueueIdleTTL)
 	return &App{
 		Config:            &cfg,
 		Store:             st,
 		Tokens:            auth.NewTokenManager(cfg.JWTSecret),
-		Hub:               rpc.NewHub(clientQueueSize, hubMaxInFlight),
+		Hub:               hub,
 		lastPresenceFlush: map[string]time.Time{},
 		persistCh:         make(chan persistTask, queueSize),
+		persistAccepting:  true,
 		ProbeHistory:      newProbeHistory(st),
 	}
 }
 
 func (a *App) StartBackgroundJobs(ctx context.Context) {
+	a.lifecycleMu.Lock()
+	if a.backgroundCancel != nil || a.closed {
+		a.lifecycleMu.Unlock()
+		return
+	}
+	defer a.lifecycleMu.Unlock()
+	backgroundCtx, backgroundCancel := context.WithCancel(ctx)
+	a.backgroundCancel = backgroundCancel
+	a.persistMu.Lock()
+	a.persistAccepting = true
+	a.persistMu.Unlock()
+	a.Hub.StartReaper()
 	workerCount := a.Config.PersistWorkers
 	if workerCount < defaultPersistWorkerCount {
 		workerCount = defaultPersistWorkerCount
 	}
 	for i := 0; i < workerCount; i++ {
-		go a.persistWorker(ctx, i+1)
+		a.persistWorkers.Add(1)
+		go a.persistWorker(i + 1)
 	}
 
+	a.backgroundWG.Add(1)
 	go func() {
+		defer a.backgroundWG.Done()
 		presenceTicker := time.NewTicker(a.cleanupInterval())
 		defer presenceTicker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-backgroundCtx.Done():
 				return
 			case <-presenceTicker.C:
 				a.cleanupPresenceCache(time.Now())
@@ -152,12 +197,14 @@ func (a *App) StartBackgroundJobs(ctx context.Context) {
 		}
 	}()
 
+	a.backgroundWG.Add(1)
 	go func() {
+		defer a.backgroundWG.Done()
 		maintenanceTicker := time.NewTicker(defaultMaintenanceInterval)
 		defer maintenanceTicker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-backgroundCtx.Done():
 				return
 			case <-maintenanceTicker.C:
 				cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -169,12 +216,14 @@ func (a *App) StartBackgroundJobs(ctx context.Context) {
 		}
 	}()
 
+	a.backgroundWG.Add(1)
 	go func() {
+		defer a.backgroundWG.Done()
 		probeTicker := time.NewTicker(30 * time.Second)
 		defer probeTicker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-backgroundCtx.Done():
 				return
 			case <-probeTicker.C:
 				a.ProbeHistory.Cleanup()
@@ -209,13 +258,12 @@ func (a *App) LoginAdmin(ctx context.Context, username, password string) (string
 	return token, user, err
 }
 
-// LoginClient 用分组的 device key 鉴权设备（不再用用户账号）。
-func (a *App) LoginClient(ctx context.Context, deviceKey, clientID, groupName, platform string, maxInFlight int, extra map[string]any, actions []string, ip string) (string, error) {
+func (a *App) LoginClient(ctx context.Context, clientID, platform string, maxInFlight int, extra map[string]any, actionsKnown bool, actions []string, ip string) (string, error) {
 	clientID = strings.TrimSpace(clientID)
-	groupName = strings.TrimSpace(groupName)
-	if clientID == "" || groupName == "" {
-		return "", fmt.Errorf("clientId 和 group 不能为空")
+	if clientID == "" {
+		return "", fmt.Errorf("clientId 不能为空")
 	}
+	groupName := DeviceGroup
 	group, err := a.Store.GetGroupByName(ctx, groupName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", &GroupError{Kind: ErrGroupNotFound, Group: groupName}
@@ -225,9 +273,6 @@ func (a *App) LoginClient(ctx context.Context, deviceKey, clientID, groupName, p
 	}
 	if !group.Enabled {
 		return "", &GroupError{Kind: ErrGroupDisabled, Group: groupName}
-	}
-	if strings.TrimSpace(group.DeviceKey) == "" || strings.TrimSpace(deviceKey) != group.DeviceKey {
-		return "", fmt.Errorf("设备密钥无效")
 	}
 	if platform == "" {
 		platform = "frida"
@@ -244,23 +289,44 @@ func (a *App) LoginClient(ctx context.Context, deviceKey, clientID, groupName, p
 	if err := a.Store.UpsertDevice(ctx, clientID, groupName, platform, ip, extra, actions); err != nil {
 		return "", err
 	}
-	a.Hub.Register(clientID, groupName, 0, platform, maxInFlight)
+	bootstrapID, err := newBootstrapID()
+	if err != nil {
+		return "", err
+	}
+	_, err = a.Hub.RegisterBootstrapCapabilities(clientID, groupName, 0, platform, maxInFlight, actionsKnown, actions, bootstrapID)
+	if err != nil {
+		return "", err
+	}
 	a.markPresenceFlushed(clientID, time.Now())
 	token, err := a.Tokens.Issue(auth.Claims{
-		Username:    clientID,
-		Role:        "client",
-		ClientID:    clientID,
-		Group:       groupName,
-		MaxInFlight: maxInFlight,
+		Username:     clientID,
+		Role:         "client",
+		ClientID:     clientID,
+		Group:        groupName,
+		MaxInFlight:  maxInFlight,
+		ActionsKnown: actionsKnown,
+		Actions:      actions,
+		TokenKind:    auth.TokenKindBootstrap,
+		BootstrapID:  bootstrapID,
 	}, 24*time.Hour)
 	return token, err
 }
 
 func (a *App) SubmitClientResult(ctx context.Context, claims *auth.Claims, result rpc.JobResult) error {
+	if claims == nil {
+		return rpc.ErrSessionIncarnationRequired
+	}
+	if claims.TokenKind != auth.TokenKindConnection {
+		return rpc.ErrConnectionTokenRequired
+	}
+	if err := a.Hub.ValidateIncarnation(claims.ClientID, claims.SessionIncarnation); err != nil {
+		return err
+	}
+	result.SessionIncarnation = claims.SessionIncarnation
 	if err := a.EnsureGroupActive(ctx, claims.Group); err != nil {
 		return err
 	}
-	a.TouchClientPresence(ctx, claims.ClientID, claims.Group, claims.UserID, claims.MaxInFlight, "", "")
+	a.TouchClientPresenceIncarnation(ctx, claims.ClientID, claims.Group, claims.UserID, claims.MaxInFlight, "", "", claims.SessionIncarnation)
 
 	outcome, err := a.Hub.SubmitResult(claims.ClientID, result)
 	if err != nil {
@@ -282,6 +348,18 @@ func (a *App) SubmitClientResult(ctx context.Context, claims *auth.Claims, resul
 	default:
 		return nil
 	}
+}
+
+func (a *App) IssueClientConnectionToken(claims *auth.Claims, incarnation string, generation uint64) (string, error) {
+	if claims == nil || incarnation == "" {
+		return "", rpc.ErrSessionIncarnationRequired
+	}
+	refreshed := *claims
+	refreshed.TokenKind = auth.TokenKindConnection
+	refreshed.BootstrapID = ""
+	refreshed.SessionIncarnation = incarnation
+	refreshed.SessionGeneration = generation
+	return a.Tokens.Issue(refreshed, 24*time.Hour)
 }
 
 func (a *App) InvokeRPC(ctx context.Context, claims *auth.Claims, groupName, actionName string, req InvokeRequest) (rpc.JobResult, string, string, error) {
@@ -347,7 +425,9 @@ func (a *App) InvokeRPC(ctx context.Context, claims *auth.Claims, groupName, act
 		status := "timeout"
 		httpCode := http.StatusGatewayTimeout
 		switch {
-		case errors.Is(err, rpc.ErrNoOnlineClient), errors.Is(err, rpc.ErrPreferredClientDown):
+		case errors.Is(err, rpc.ErrNoOnlineClient), errors.Is(err, rpc.ErrPreferredClientDown),
+			errors.Is(err, rpc.ErrNoCapableClient), errors.Is(err, rpc.ErrActionNotSupported),
+			errors.Is(err, rpc.ErrPreferredClientGroup):
 			status = "no_client"
 			httpCode = http.StatusBadGateway
 		case errors.Is(err, rpc.ErrClientQueueFull), errors.Is(err, rpc.ErrGroupSaturated):
@@ -536,6 +616,61 @@ func (a *App) TouchClientPresence(ctx context.Context, clientID, groupName strin
 	}
 }
 
+func (a *App) TouchClientPresenceGeneration(ctx context.Context, clientID, groupName string, userID int64, maxInFlight int, platform, ip string, generation uint64) {
+	if clientID == "" || !a.Hub.TouchGeneration(clientID, generation) {
+		return
+	}
+	if !a.shouldFlushPresence(clientID, time.Now()) || a.Store == nil {
+		return
+	}
+	if err := a.Store.TouchDevice(ctx, clientID, ip); err != nil {
+		a.resetPresenceFlush(clientID)
+		log.Printf("touch device failed: client=%s err=%v", clientID, err)
+	}
+}
+
+func (a *App) TouchClientPresenceIncarnation(ctx context.Context, clientID, groupName string, userID int64, maxInFlight int, platform, ip, incarnation string) {
+	if clientID == "" || !a.Hub.TouchIncarnation(clientID, incarnation) {
+		return
+	}
+	if !a.shouldFlushPresence(clientID, time.Now()) || a.Store == nil {
+		return
+	}
+	if err := a.Store.TouchDevice(ctx, clientID, ip); err != nil {
+		a.resetPresenceFlush(clientID)
+		log.Printf("touch device failed: client=%s err=%v", clientID, err)
+	}
+}
+
+func (a *App) Close() error {
+	a.closeOnce.Do(func() {
+		a.lifecycleMu.Lock()
+		a.closed = true
+		if a.backgroundCancel != nil {
+			a.backgroundCancel()
+		}
+		a.lifecycleMu.Unlock()
+		a.backgroundWG.Wait()
+
+		a.persistMu.Lock()
+		a.persistAccepting = false
+		a.persistMu.Unlock()
+		a.persistProducers.Wait()
+		if a.persistCh != nil {
+			close(a.persistCh)
+		}
+		a.persistWorkers.Wait()
+
+		if a.Hub != nil {
+			a.Hub.Close()
+		}
+		if a.Store != nil && a.Store.DB != nil {
+			a.closeErr = a.Store.DB.Close()
+		}
+	})
+	return a.closeErr
+}
+
 func (a *App) presenceFlushInterval() time.Duration {
 	seconds := a.Config.PresenceFlushSeconds
 	if seconds <= 0 {
@@ -602,13 +737,22 @@ func (a *App) cleanupPresenceCache(now time.Time) {
 }
 
 func (a *App) enqueuePersist(task persistTask) {
+	a.persistMu.RLock()
+	if !a.persistAccepting || a.persistCh == nil {
+		a.persistMu.RUnlock()
+		return
+	}
 	select {
 	case a.persistCh <- task:
+		a.persistMu.RUnlock()
 		return
 	default:
 	}
+	a.persistProducers.Add(1)
+	a.persistMu.RUnlock()
 
 	go func(task persistTask) {
+		defer a.persistProducers.Done()
 		timer := time.NewTimer(persistEnqueueWait)
 		defer timer.Stop()
 		select {
@@ -622,32 +766,39 @@ func (a *App) enqueuePersist(task persistTask) {
 	}(task)
 }
 
-func (a *App) persistWorker(ctx context.Context, workerID int) {
+func (a *App) persistWorker(workerID int) {
 	const persistBatchSize = 256
+	defer a.persistWorkers.Done()
 
 	for {
-		select {
-		case <-ctx.Done():
+		task, ok := <-a.persistCh
+		if !ok {
 			return
-		case task := <-a.persistCh:
-			batch := make([]persistTask, 0, persistBatchSize)
-			batch = append(batch, task)
-		drainLoop:
-			for len(batch) < persistBatchSize {
-				select {
-				case nextTask := <-a.persistCh:
-					batch = append(batch, nextTask)
-				default:
+		}
+		batch := make([]persistTask, 0, persistBatchSize)
+		batch = append(batch, task)
+	drainLoop:
+		for len(batch) < persistBatchSize {
+			select {
+			case nextTask, open := <-a.persistCh:
+				if !open {
 					break drainLoop
 				}
+				batch = append(batch, nextTask)
+			default:
+				break drainLoop
 			}
-			if err := a.runPersistBatch(batch); err != nil {
-				log.Printf("persist worker batch failed: worker=%d batch=%d err=%v", workerID, len(batch), err)
-				if len(batch) > 1 {
-					for _, item := range batch {
-						if itemErr := a.runPersistTask(item); itemErr != nil {
-							log.Printf("persist worker fallback failed: worker=%d kind=%s request=%s client=%s err=%v", workerID, item.Kind, item.RequestID, item.ClientID, itemErr)
-						}
+		}
+		runBatch := a.runPersistBatch
+		if a.persistBatchRunner != nil {
+			runBatch = a.persistBatchRunner
+		}
+		if err := runBatch(batch); err != nil {
+			log.Printf("persist worker batch failed: worker=%d batch=%d err=%v", workerID, len(batch), err)
+			if len(batch) > 1 {
+				for _, item := range batch {
+					if itemErr := a.runPersistTask(item); itemErr != nil {
+						log.Printf("persist worker fallback failed: worker=%d kind=%s request=%s client=%s err=%v", workerID, item.Kind, item.RequestID, item.ClientID, itemErr)
 					}
 				}
 			}
@@ -692,4 +843,12 @@ func randomID() string {
 		return fmt.Sprintf("req-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buf)
+}
+
+func newBootstrapID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate bootstrap id: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
 }

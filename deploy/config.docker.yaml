@@ -16,7 +16,15 @@ mysql:
   password: "r1rpc_dev"
   db: "r1rpc"
 
+# Redis 由 docker-compose 启动，供本地联调检查；当前 r1rpc 队列仍使用已有内存实现，
+# 因此这里不配置未使用的 Redis 队列后端。
+
 limits:
-  client_max_in_flight: 8
+  client_max_in_flight: 1
+  action_default_max_in_flight: 1
+  queue_lease_duration_seconds: 10
+  queue_lease_reaper_interval_seconds: 1
+  execution_grace_seconds: 30
+  client_queue_idle_ttl_seconds: 600
   request_timeout_seconds: 25
   device_offline_seconds: 20

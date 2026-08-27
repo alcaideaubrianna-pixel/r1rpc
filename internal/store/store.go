@@ -115,6 +115,7 @@ func ensureColumns(ctx context.Context, db *sql.DB, schema string) error {
 		{Table: "groups", Name: "display_name", Def: "VARCHAR(128) NOT NULL DEFAULT ''"},
 		{Table: "groups", Name: "auth_mode", Def: "VARCHAR(16) NOT NULL DEFAULT 'none'"},
 		{Table: "groups", Name: "api_key", Def: "VARCHAR(128) NOT NULL DEFAULT ''"},
+		{Table: "devices", Name: "extra_json", Def: "LONGTEXT NULL"},
 		{Table: "devices", Name: "actions_json", Def: "LONGTEXT NULL"},
 	}
 	for _, c := range columns {
@@ -588,6 +589,122 @@ func (s *Store) TouchDevice(ctx context.Context, clientID, ip string) error {
 func (s *Store) DeleteDevice(ctx context.Context, clientID string) error {
 	_, err := s.DB.ExecContext(ctx, "DELETE FROM devices WHERE client_id = ?", clientID)
 	return err
+}
+
+func (s *Store) GetStorageSetting(ctx context.Context) (*model.StorageSetting, error) {
+	var item model.StorageSetting
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT backend, local_path, endpoint, region, bucket, path_style,
+		       COALESCE(access_key_encrypted, ''), COALESCE(secret_key_encrypted, ''), updated_at
+		FROM storage_settings WHERE id = 1
+	`).Scan(
+		&item.Backend, &item.LocalPath, &item.Endpoint, &item.Region, &item.Bucket,
+		&item.PathStyle, &item.AccessKeyEncrypted, &item.SecretKeyEncrypted, &item.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	item.AccessKeyConfigured = item.AccessKeyEncrypted != ""
+	item.SecretKeyConfigured = item.SecretKeyEncrypted != ""
+	return &item, nil
+}
+
+func (s *Store) SaveStorageSetting(ctx context.Context, item model.StorageSetting) error {
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT INTO storage_settings (
+			id, backend, local_path, endpoint, region, bucket, path_style,
+			access_key_encrypted, secret_key_encrypted
+		) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON DUPLICATE KEY UPDATE
+			backend = VALUES(backend), local_path = VALUES(local_path), endpoint = VALUES(endpoint),
+			region = VALUES(region), bucket = VALUES(bucket), path_style = VALUES(path_style),
+			access_key_encrypted = VALUES(access_key_encrypted),
+			secret_key_encrypted = VALUES(secret_key_encrypted)
+	`, item.Backend, item.LocalPath, item.Endpoint, item.Region, item.Bucket, item.PathStyle,
+		item.AccessKeyEncrypted, item.SecretKeyEncrypted)
+	return err
+}
+
+func (s *Store) CreateFile(ctx context.Context, item model.File) error {
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT INTO files (
+			id, object_key, original_name, content_type, size_bytes, sha256,
+			backend, status, created_by, expires_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, item.ID, item.ObjectKey, item.OriginalName, item.ContentType, item.SizeBytes,
+		item.SHA256, item.Backend, item.Status, item.CreatedBy, item.ExpiresAt)
+	return err
+}
+
+func (s *Store) GetFile(ctx context.Context, id string) (*model.File, error) {
+	var item model.File
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT id, object_key, original_name, content_type, size_bytes, sha256,
+		       backend, status, created_by, created_at, expires_at, deleted_at
+		FROM files WHERE id = ? AND deleted_at IS NULL AND status = 'active'
+	`, id).Scan(
+		&item.ID, &item.ObjectKey, &item.OriginalName, &item.ContentType, &item.SizeBytes,
+		&item.SHA256, &item.Backend, &item.Status, &item.CreatedBy, &item.CreatedAt,
+		&item.ExpiresAt, &item.DeletedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+func (s *Store) ListFiles(ctx context.Context, page, pageSize int) ([]model.File, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	var total int64
+	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM files WHERE deleted_at IS NULL AND status = 'active'").Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT id, object_key, original_name, content_type, size_bytes, sha256,
+		       backend, status, created_by, created_at, expires_at, deleted_at
+		FROM files WHERE deleted_at IS NULL AND status = 'active'
+		ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?
+	`, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]model.File, 0, pageSize)
+	for rows.Next() {
+		var item model.File
+		if err := rows.Scan(
+			&item.ID, &item.ObjectKey, &item.OriginalName, &item.ContentType, &item.SizeBytes,
+			&item.SHA256, &item.Backend, &item.Status, &item.CreatedBy, &item.CreatedAt,
+			&item.ExpiresAt, &item.DeletedAt,
+		); err != nil {
+			return nil, 0, err
+		}
+		items = append(items, item)
+	}
+	return items, total, rows.Err()
+}
+
+func (s *Store) SoftDeleteFile(ctx context.Context, id string) error {
+	result, err := s.DB.ExecContext(ctx, `
+		UPDATE files SET status = 'deleted', deleted_at = NOW()
+		WHERE id = ? AND deleted_at IS NULL AND status = 'active'
+	`, id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) CompleteRPCRequest(ctx context.Context, item *model.RPCRequest) error {
@@ -1227,6 +1344,20 @@ func (s *Store) ListDevices(ctx context.Context, groupName, clientID string, lim
 		}
 		if item.Actions == nil {
 			item.Actions = []string{}
+		}
+		if item.ExtraJSON != "" {
+			var extra struct {
+				DeviceMachine string `json:"deviceMachine"`
+				DeviceModel   string `json:"deviceModel"`
+				OSName        string `json:"osName"`
+				OSVersion     string `json:"osVersion"`
+			}
+			if json.Unmarshal([]byte(item.ExtraJSON), &extra) == nil {
+				item.DeviceMachine = extra.DeviceMachine
+				item.DeviceModel = extra.DeviceModel
+				item.OSName = extra.OSName
+				item.OSVersion = extra.OSVersion
+			}
 		}
 		result = append(result, item)
 	}

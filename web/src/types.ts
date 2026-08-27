@@ -41,6 +41,10 @@ export interface Device {
   lastSeenAt: string
   lastIp: string
   extraJson: string
+  deviceMachine: string
+  deviceModel: string
+  osName: string
+  osVersion: string
   actions: string[]
   createdAt: string
   updatedAt: string

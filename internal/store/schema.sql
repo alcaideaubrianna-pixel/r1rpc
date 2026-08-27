@@ -43,6 +43,36 @@ CREATE TABLE IF NOT EXISTS devices (
     INDEX idx_devices_last_seen (last_seen_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS storage_settings (
+    id TINYINT PRIMARY KEY,
+    backend VARCHAR(16) NOT NULL,
+    local_path VARCHAR(1024) NOT NULL DEFAULT '',
+    endpoint VARCHAR(1024) NOT NULL DEFAULT '',
+    region VARCHAR(128) NOT NULL DEFAULT '',
+    bucket VARCHAR(255) NOT NULL DEFAULT '',
+    path_style TINYINT(1) NOT NULL DEFAULT 1,
+    access_key_encrypted TEXT NULL,
+    secret_key_encrypted TEXT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS files (
+    id CHAR(32) PRIMARY KEY,
+    object_key VARCHAR(512) NOT NULL UNIQUE,
+    original_name VARCHAR(512) NOT NULL,
+    content_type VARCHAR(128) NOT NULL,
+    size_bytes BIGINT NOT NULL,
+    sha256 CHAR(64) NOT NULL,
+    backend VARCHAR(16) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'active',
+    created_by BIGINT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME NULL,
+    deleted_at DATETIME NULL,
+    INDEX idx_files_status_created (status, created_at),
+    INDEX idx_files_created_by_created (created_by, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS rpc_requests (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     request_id VARCHAR(64) NOT NULL UNIQUE,

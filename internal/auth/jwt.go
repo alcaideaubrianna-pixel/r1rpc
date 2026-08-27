@@ -10,14 +10,25 @@ import (
 )
 
 type Claims struct {
-	UserID      int64  `json:"userId"`
-	Username    string `json:"username"`
-	Role        string `json:"role"`
-	ClientID    string `json:"clientId,omitempty"`
-	Group       string `json:"group,omitempty"`
-	MaxInFlight int    `json:"maxInFlight,omitempty"`
+	UserID             int64    `json:"userId"`
+	Username           string   `json:"username"`
+	Role               string   `json:"role"`
+	ClientID           string   `json:"clientId,omitempty"`
+	Group              string   `json:"group,omitempty"`
+	MaxInFlight        int      `json:"maxInFlight,omitempty"`
+	ActionsKnown       bool     `json:"actionsKnown,omitempty"`
+	Actions            []string `json:"actions,omitempty"`
+	TokenKind          string   `json:"tokenKind,omitempty"`
+	BootstrapID        string   `json:"bootstrapId,omitempty"`
+	SessionIncarnation string   `json:"sessionIncarnation,omitempty"`
+	SessionGeneration  uint64   `json:"sessionGeneration,omitempty"`
 	jwt.RegisteredClaims
 }
+
+const (
+	TokenKindBootstrap  = "bootstrap"
+	TokenKindConnection = "connection"
+)
 
 type TokenManager struct {
 	secret []byte

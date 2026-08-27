@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	devicemodel "github.com/cypacky-io/device-parser"
 )
 
 type Server struct {
@@ -478,7 +480,13 @@ func (s *Server) handleRPCClientQueue(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		session := sessions[item.ClientID]
+		session, online := sessions[item.ClientID]
+		pendingCount, inFlight, maxInFlight := 0, 0, 0
+		if online && session.Pending != nil {
+			pendingCount = session.Pending.Len()
+			inFlight = session.InFlight
+			maxInFlight = session.MaxInFlight
+		}
 		queue = append(queue, map[string]any{
 			"clientId":     item.ClientID,
 			"group":        item.GroupName,
@@ -486,9 +494,9 @@ func (s *Server) handleRPCClientQueue(w http.ResponseWriter, r *http.Request) {
 			"status":       item.Status,
 			"lastSeenAt":   item.LastSeenAt.Format(time.RFC3339),
 			"lastIp":       item.LastIP,
-			"pendingCount": session.Pending.Len(),
-			"inFlight":     session.InFlight,
-			"maxInFlight":  session.MaxInFlight,
+			"pendingCount": pendingCount,
+			"inFlight":     inFlight,
+			"maxInFlight":  maxInFlight,
 		})
 		clientIDs = append(clientIDs, item.ClientID)
 	}
@@ -586,7 +594,7 @@ func (s *Server) handleRealtimeMetrics(w http.ResponseWriter, r *http.Request, c
 
 func (s *Server) handleHealthProbes(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
 	type groupProbe struct {
-		Group   string           `json:"group"`
+		Group   string            `json:"group"`
 		Buckets []app.ProbeBucket `json:"buckets"`
 	}
 	groups, err := s.App.Store.ListGroups(r.Context())
@@ -606,13 +614,11 @@ func (s *Server) handleHealthProbes(w http.ResponseWriter, r *http.Request, clai
 
 func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		DeviceKey   string         `json:"deviceKey"`
 		ClientID    string         `json:"clientId"`
-		Group       string         `json:"group"`
 		Platform    string         `json:"platform"`
 		MaxInFlight int            `json:"maxInFlight"`
 		Extra       map[string]any `json:"extra"`
-		Actions     []string       `json:"actions"`
+		Actions     *[]string      `json:"actions"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -627,7 +633,30 @@ func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
 	if req.MaxInFlight > 1024 {
 		req.MaxInFlight = 1024
 	}
-	token, err := s.App.LoginClient(r.Context(), req.DeviceKey, req.ClientID, req.Group, req.Platform, req.MaxInFlight, req.Extra, req.Actions, s.App.RemoteIP(r))
+	if req.Extra == nil {
+		req.Extra = map[string]any{}
+	}
+	machine := cleanDeviceHeader(r.Header.Get("X-Device-Machine"))
+	if machine != "" {
+		req.Extra["deviceMachine"] = machine
+		modelName := devicemodel.Lookup(machine)
+		if modelName == "" {
+			modelName = machine
+		}
+		req.Extra["deviceModel"] = modelName
+	}
+	if value := cleanDeviceHeader(r.Header.Get("X-OS-Name")); value != "" {
+		req.Extra["osName"] = value
+	}
+	if value := cleanDeviceHeader(r.Header.Get("X-OS-Version")); value != "" {
+		req.Extra["osVersion"] = value
+	}
+	actionsKnown := req.Actions != nil
+	var actions []string
+	if req.Actions != nil {
+		actions = *req.Actions
+	}
+	token, err := s.App.LoginClient(r.Context(), req.ClientID, req.Platform, req.MaxInFlight, req.Extra, actionsKnown, actions, s.App.RemoteIP(r))
 	if err != nil {
 		if status, ok := groupErrorHTTPStatus(err); ok {
 			writeError(w, status, err)
@@ -636,10 +665,22 @@ func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"token": token, "group": req.Group, "maxInFlight": req.MaxInFlight, "transport": "websocket", "wsUrl": s.clientWSURL(r, token)})
+	writeJSON(w, http.StatusOK, map[string]any{"token": token, "maxInFlight": req.MaxInFlight, "transport": "websocket", "wsUrl": s.clientWSURL(r, token)})
+}
+
+func cleanDeviceHeader(value string) string {
+	value = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(value, "\r", ""), "\n", ""))
+	if len(value) > 128 {
+		return value[:128]
+	}
+	return value
 }
 
 func (s *Server) handleClientResult(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	if err := validateClientConnectionClaims(claims); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
 	var req struct {
 		RequestID             string          `json:"requestId"`
 		Status                string          `json:"status"`
@@ -673,7 +714,7 @@ func (s *Server) handleClientResult(w http.ResponseWriter, r *http.Request, clai
 			writeError(w, status, err)
 			return
 		}
-		if errors.Is(err, rpc.ErrResultClientMismatch) {
+		if errors.Is(err, rpc.ErrResultClientMismatch) || errors.Is(err, rpc.ErrConnectionTokenRequired) || errors.Is(err, rpc.ErrSessionIncarnationRequired) || errors.Is(err, rpc.ErrSessionIncarnationMismatch) || errors.Is(err, rpc.ErrClientSessionGone) {
 			writeError(w, http.StatusConflict, err)
 			return
 		}
@@ -684,8 +725,29 @@ func (s *Server) handleClientResult(w http.ResponseWriter, r *http.Request, clai
 }
 
 func (s *Server) handleClientLogout(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
-	s.App.Hub.Unregister(claims.ClientID)
+	if err := validateClientConnectionClaims(claims); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	if err := s.App.Hub.UnregisterIncarnationE(claims.ClientID, claims.SessionIncarnation); err != nil {
+		if errors.Is(err, rpc.ErrSessionIncarnationRequired) || errors.Is(err, rpc.ErrSessionIncarnationMismatch) || errors.Is(err, rpc.ErrClientSessionGone) {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func validateClientConnectionClaims(claims *auth.Claims) error {
+	if claims == nil || claims.TokenKind != auth.TokenKindConnection {
+		return rpc.ErrConnectionTokenRequired
+	}
+	if claims.SessionIncarnation == "" {
+		return rpc.ErrSessionIncarnationRequired
+	}
+	return nil
 }
 
 func (s *Server) handleInvoke(w http.ResponseWriter, r *http.Request) {
@@ -715,7 +777,9 @@ func (s *Server) handleInvoke(w http.ResponseWriter, r *http.Request) {
 			httpCode = http.StatusForbidden
 		case errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.TrimSpace(err.Error()), "context deadline exceeded"):
 			httpCode = http.StatusGatewayTimeout
-		case errors.Is(err, rpc.ErrNoOnlineClient), errors.Is(err, rpc.ErrPreferredClientDown):
+		case errors.Is(err, rpc.ErrNoOnlineClient), errors.Is(err, rpc.ErrPreferredClientDown),
+			errors.Is(err, rpc.ErrNoCapableClient), errors.Is(err, rpc.ErrActionNotSupported),
+			errors.Is(err, rpc.ErrPreferredClientGroup):
 			httpCode = http.StatusBadGateway
 		case errors.Is(err, rpc.ErrClientQueueFull), errors.Is(err, rpc.ErrGroupSaturated):
 			httpCode = http.StatusTooManyRequests

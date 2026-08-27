@@ -15,17 +15,60 @@ type User struct {
 }
 
 type Device struct {
-	ID         int64     `json:"id"`
-	ClientID   string    `json:"clientId"`
-	GroupName  string    `json:"group"`
-	Platform   string    `json:"platform"`
-	Status     string    `json:"status"`
-	LastSeenAt time.Time `json:"lastSeenAt"`
-	LastIP     string    `json:"lastIp"`
-	ExtraJSON  string    `json:"extraJson"`
-	Actions    []string  `json:"actions"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	ID            int64     `json:"id"`
+	ClientID      string    `json:"clientId"`
+	GroupName     string    `json:"group"`
+	Platform      string    `json:"platform"`
+	Status        string    `json:"status"`
+	LastSeenAt    time.Time `json:"lastSeenAt"`
+	LastIP        string    `json:"lastIp"`
+	ExtraJSON     string    `json:"extraJson"`
+	DeviceMachine string    `json:"deviceMachine"`
+	DeviceModel   string    `json:"deviceModel"`
+	OSName        string    `json:"osName"`
+	OSVersion     string    `json:"osVersion"`
+	SDKName       string    `json:"sdkName"`
+	SDKVersion    string    `json:"sdkVersion"`
+	Actions       []string  `json:"actions"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
+type StorageSetting struct {
+	Backend             string    `json:"backend"`
+	LocalPath           string    `json:"localPath"`
+	Endpoint            string    `json:"endpoint"`
+	Region              string    `json:"region"`
+	Bucket              string    `json:"bucket"`
+	PathStyle           bool      `json:"pathStyle"`
+	AccessKeyEncrypted  string    `json:"-"`
+	SecretKeyEncrypted  string    `json:"-"`
+	AccessKeyConfigured bool      `json:"accessKeyConfigured"`
+	SecretKeyConfigured bool      `json:"secretKeyConfigured"`
+	UpdatedAt           time.Time `json:"updatedAt"`
+}
+
+type File struct {
+	ID           string     `json:"id"`
+	ObjectKey    string     `json:"-"`
+	OriginalName string     `json:"originalName"`
+	ContentType  string     `json:"contentType"`
+	SizeBytes    int64      `json:"sizeBytes"`
+	SHA256       string     `json:"sha256"`
+	Backend      string     `json:"backend"`
+	Status       string     `json:"status"`
+	CreatedBy    int64      `json:"createdBy"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	ExpiresAt    *time.Time `json:"expiresAt,omitempty"`
+	DeletedAt    *time.Time `json:"deletedAt,omitempty"`
+}
+
+type FilePage struct {
+	Items      []File `json:"items"`
+	Page       int    `json:"page"`
+	PageSize   int    `json:"pageSize"`
+	Total      int64  `json:"total"`
+	TotalPages int    `json:"totalPages"`
 }
 
 type RPCRequest struct {
@@ -104,7 +147,7 @@ type GroupInfo struct {
 }
 
 type RealtimeBucket struct {
-	Label   string `json:"t"`       // HH:MM
+	Label   string `json:"t"` // HH:MM
 	Success int64  `json:"success"`
 	Failed  int64  `json:"failed"`
 	Timeout int64  `json:"timeout"`
