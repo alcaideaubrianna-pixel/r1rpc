@@ -1,6 +1,6 @@
 COMPOSE := docker compose -f deploy/docker-compose.yml
 
-.PHONY: dev-deps dev dev-full dev-stop dev-clean dev-status dev-logs
+.PHONY: dev-deps dev dev-full dev-stop dev-clean dev-status dev-logs dao ctrl generate
 
 dev-deps:
 	$(COMPOSE) up -d --pull never mysql redis
@@ -30,3 +30,12 @@ dev-status:
 
 dev-logs:
 	$(COMPOSE) --profile full logs -f
+
+dao:
+	@test -n "$${R1RPC_DAO_DSN}" || (echo "必须通过 R1RPC_DAO_DSN 提供本地数据库连接串" >&2; exit 1)
+	gf gen dao -l "$${R1RPC_DAO_DSN}" -t "files,storage_settings,image_*,xhs_user_profiles" -p internal -s
+
+ctrl:
+	gf gen ctrl -s api -d internal/controller
+
+generate: dao ctrl

@@ -70,3 +70,16 @@ export const upload = <T>(url: string, body: FormData) => request<T>(url, { meth
 export const patch = <T>(url: string, body?: unknown) =>
   request<T>(url, { method: 'PATCH', body: body != null ? JSON.stringify(body) : undefined })
 export const del = <T>(url: string) => request<T>(url, { method: 'DELETE' })
+export const put = <T>(url: string, body?: unknown) =>
+  request<T>(url, { method: 'PUT', body: body != null ? JSON.stringify(body) : undefined })
+
+export async function getBlob(url: string): Promise<Blob> {
+  const headers: Record<string, string> = {}
+  if (auth.token) headers.Authorization = `Bearer ${auth.token}`
+  const response = await fetch(url, { headers, credentials: 'include' })
+  if (!response.ok) {
+    if (response.status === 401) auth.logout()
+    throw new ApiError(response.status, response.statusText || '图片加载失败')
+  }
+  return response.blob()
+}

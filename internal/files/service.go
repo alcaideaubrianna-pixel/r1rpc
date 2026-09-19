@@ -1,6 +1,7 @@
 package files
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -13,27 +14,25 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"r1rpc/internal/dao"
 	"r1rpc/internal/model"
-	"r1rpc/internal/store"
+	"r1rpc/internal/model/do"
+	"r1rpc/internal/model/entity"
+	"r1rpc/internal/storage"
+
+	"github.com/gogf/gf/v2/errors/gerror"
 )
 
 const MaxImageBytes int64 = 12 << 20
 
 type Service struct {
-	root  string
-	store *store.Store
+	backend storage.Backend
 }
 
-func New(root string, st *store.Store) (*Service, error) {
-	root, err := filepath.Abs(strings.TrimSpace(root))
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(root, 0o750); err != nil {
-		return nil, err
-	}
-	return &Service{root: root, store: st}, nil
+func New(backend storage.Backend) *Service {
+	return &Service{backend: backend}
 }
 
 func (s *Service) Save(ctx context.Context, header *multipart.FileHeader, createdBy int64) (*model.File, error) {
@@ -50,7 +49,7 @@ func (s *Service) Save(ctx context.Context, header *multipart.FileHeader, create
 	if err != nil {
 		return nil, err
 	}
-	tmp, err := os.CreateTemp(s.root, ".upload-*")
+	tmp, err := os.CreateTemp("", ".r1rpc-upload-*")
 	if err != nil {
 		return nil, err
 	}
@@ -75,32 +74,70 @@ func (s *Service) Save(ctx context.Context, header *multipart.FileHeader, create
 		return nil, err
 	}
 	objectKey := id + extension
-	destination := filepath.Join(s.root, objectKey)
-	if err := os.Rename(tmpName, destination); err != nil {
+	storedSource, err := os.Open(tmpName)
+	if err != nil {
+		return nil, err
+	}
+	defer storedSource.Close()
+	if err := s.backend.Put(ctx, storage.Object{Key: objectKey, ContentType: contentType, Size: written}, storedSource); err != nil {
 		return nil, err
 	}
 	item := model.File{
 		ID: id, ObjectKey: objectKey, OriginalName: filepath.Base(header.Filename),
 		ContentType: contentType, SizeBytes: written, SHA256: hex.EncodeToString(hash.Sum(nil)),
-		Backend: "local", Status: "active", CreatedBy: createdBy,
+		Backend: s.backend.Name(), Status: "active", CreatedBy: createdBy,
 	}
-	if err := s.store.CreateFile(ctx, item); err != nil {
-		_ = os.Remove(destination)
+	if _, err := dao.Files.Ctx(ctx).Data(do.Files{
+		Id: item.ID, ObjectKey: item.ObjectKey, OriginalName: item.OriginalName,
+		ContentType: item.ContentType, SizeBytes: item.SizeBytes, Sha256: item.SHA256,
+		Backend: item.Backend, Status: item.Status, CreatedBy: item.CreatedBy,
+	}).Insert(); err != nil {
+		_ = s.backend.Delete(ctx, objectKey)
 		return nil, err
 	}
-	return s.store.GetFile(ctx, id)
+	return &item, nil
 }
 
-func (s *Service) Open(ctx context.Context, id string) (*model.File, *os.File, error) {
-	item, err := s.store.GetFile(ctx, strings.TrimSpace(id))
+// SaveBytes 将内部任务产生的图片写入统一文件存储。调用方只保存文件 ID，便于后续替换 COS/OSS 后端。
+func (s *Service) SaveBytes(ctx context.Context, data []byte, originalName string, createdBy int64) (*model.File, error) {
+	if len(data) == 0 || int64(len(data)) > MaxImageBytes {
+		return nil, fmt.Errorf("图片大小必须在 1 字节到 12 MiB 之间")
+	}
+	id, err := randomID()
+	if err != nil {
+		return nil, err
+	}
+	contentType, extension, err := detectImageBytes(data)
+	if err != nil {
+		return nil, err
+	}
+	objectKey := id + extension
+	if err = s.backend.Put(ctx, storage.Object{Key: objectKey, ContentType: contentType, Size: int64(len(data))}, bytes.NewReader(data)); err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(data)
+	item := &model.File{
+		ID: id, ObjectKey: objectKey, OriginalName: filepath.Base(originalName),
+		ContentType: contentType, SizeBytes: int64(len(data)), SHA256: hex.EncodeToString(sum[:]),
+		Backend: s.backend.Name(), Status: "active", CreatedBy: createdBy,
+	}
+	if _, err = dao.Files.Ctx(ctx).Data(do.Files{
+		Id: item.ID, ObjectKey: item.ObjectKey, OriginalName: item.OriginalName,
+		ContentType: item.ContentType, SizeBytes: item.SizeBytes, Sha256: item.SHA256,
+		Backend: item.Backend, Status: item.Status, CreatedBy: item.CreatedBy,
+	}).Insert(); err != nil {
+		_ = s.backend.Delete(ctx, objectKey)
+		return nil, gerror.Wrap(err, "保存内部图片文件记录失败")
+	}
+	return item, nil
+}
+
+func (s *Service) Open(ctx context.Context, id string) (*model.File, io.ReadCloser, error) {
+	item, err := s.get(ctx, id)
 	if err != nil {
 		return nil, nil, err
 	}
-	path, err := s.path(item.ObjectKey)
-	if err != nil {
-		return nil, nil, err
-	}
-	file, err := os.Open(path)
+	file, err := s.backend.Open(ctx, item.ObjectKey)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -121,25 +158,31 @@ func (s *Service) Read(ctx context.Context, id string) (*model.File, []byte, err
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {
-	item, err := s.store.GetFile(ctx, id)
+	item, err := s.get(ctx, id)
 	if err != nil {
 		return err
 	}
-	path, err := s.path(item.ObjectKey)
-	if err != nil {
+	if err := s.backend.Delete(ctx, item.ObjectKey); err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return s.store.SoftDeleteFile(ctx, id)
+	_, err = dao.Files.Ctx(ctx).Where(dao.Files.Columns().Id, id).
+		Data(do.Files{Status: "deleted"}).Delete()
+	return err
 }
 
-func (s *Service) path(objectKey string) (string, error) {
-	if objectKey == "" || filepath.Base(objectKey) != objectKey {
-		return "", fmt.Errorf("非法文件路径")
+func (s *Service) URL(ctx context.Context, id string) (string, error) {
+	item, err := s.get(ctx, id)
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(s.root, objectKey), nil
+	URL, err := s.backend.URL(ctx, item.ObjectKey)
+	if err != nil {
+		return "", err
+	}
+	if URL != "" {
+		return URL, nil
+	}
+	return "/api/files/" + item.ID + "/content", nil
 }
 
 func detectImage(path string) (string, string, error) {
@@ -163,6 +206,48 @@ func detectImage(path string) (string, string, error) {
 		}
 	}
 	return "", "", fmt.Errorf("仅支持 JPEG、PNG、HEIC 或 HEIF 图片")
+}
+
+func detectImageBytes(data []byte) (string, string, error) {
+	if len(data) > 32 {
+		data = data[:32]
+	}
+	switch {
+	case len(data) >= 3 && data[0] == 0xff && data[1] == 0xd8 && data[2] == 0xff:
+		return "image/jpeg", ".jpg", nil
+	case len(data) >= 8 && string(data[:8]) == "\x89PNG\r\n\x1a\n":
+		return "image/png", ".png", nil
+	case len(data) >= 12 && string(data[4:8]) == "ftyp":
+		brand := string(data[8:12])
+		if strings.HasPrefix(brand, "hei") || brand == "mif1" || brand == "msf1" {
+			return "image/heic", ".heic", nil
+		}
+	}
+	return "", "", fmt.Errorf("仅支持 JPEG、PNG、HEIC 或 HEIF 图片")
+}
+
+func (s *Service) get(ctx context.Context, id string) (*model.File, error) {
+	var record entity.Files
+	columns := dao.Files.Columns()
+	if err := dao.Files.Ctx(ctx).Where(columns.Id, strings.TrimSpace(id)).Where(columns.Status, "active").Scan(&record); err != nil {
+		return nil, err
+	}
+	if record.Id == "" {
+		return nil, sql.ErrNoRows
+	}
+	return &model.File{
+		ID: record.Id, ObjectKey: record.ObjectKey, OriginalName: record.OriginalName,
+		ContentType: record.ContentType, SizeBytes: record.SizeBytes, SHA256: record.Sha256,
+		Backend: record.Backend, Status: record.Status, CreatedBy: record.CreatedBy,
+		CreatedAt: record.CreatedAt, ExpiresAt: timePointer(record.ExpiresAt), DeletedAt: timePointer(record.DeletedAt),
+	}, nil
+}
+
+func timePointer(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	return &value
 }
 
 func randomID() (string, error) {

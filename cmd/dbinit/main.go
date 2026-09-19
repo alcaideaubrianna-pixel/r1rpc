@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"r1rpc/internal/config"
+	"r1rpc/internal/persistence"
 	"r1rpc/internal/store"
 )
 
@@ -23,6 +24,9 @@ func main() {
 
 	if err := store.BootstrapSchema(ctx, cfg); err != nil {
 		log.Fatalf("bootstrap schema failed: %v", err)
+	}
+	if err := persistence.ConfigureGoFrameDB(ctx, cfg); err != nil {
+		log.Fatalf("initialize GoFrame ORM failed: %v", err)
 	}
 	st, err := store.New(cfg)
 	if err != nil {

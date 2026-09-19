@@ -11,6 +11,9 @@ import RequestsPage from './pages/RequestsPage'
 import InvokePage from './pages/InvokePage'
 import UsersPage from './pages/UsersPage'
 import FilesPage from './pages/FilesPage'
+import ImageBatchesPage from './pages/ImageBatchesPage'
+import ImageSearchPage from './pages/ImageSearchPage'
+import ImageSearchDetailPage from './pages/ImageSearchDetailPage'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const loc = useLocation()
@@ -37,6 +40,9 @@ export default function App() {
         <Route path="requests" element={<RequestsPage />} />
         <Route path="invoke" element={<InvokePage />} />
         <Route path="files" element={<FilesPage />} />
+        <Route path="image-batches" element={<ImageBatchesPage />} />
+        <Route path="image-search" element={<ImageSearchPage />} />
+        <Route path="image-search/:id" element={<ImageSearchDetailPage />} />
         <Route path="users" element={<UsersPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/overview" replace />} />

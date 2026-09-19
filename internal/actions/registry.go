@@ -18,6 +18,11 @@ type Definition struct {
 }
 
 var registry = map[string]Definition{
+	"image.recognize": {
+		Name:            "image.recognize",
+		PayloadTemplate: map[string]any{"image": map[string]any{"fileId": ""}, "forceRefresh": false, "priority": 0},
+		Inputs:          []Input{{Path: "image.fileId", Type: "file", Label: "识别图片", Required: true, Accept: []string{"image/jpeg", "image/png", "image/heic", "image/heif"}}},
+	},
 	"content.search_notes": {
 		Name:            "content.search_notes",
 		PayloadTemplate: map[string]any{"query": "", "limit": 20},
@@ -48,8 +53,8 @@ var registry = map[string]Definition{
 	},
 	"network.request": {
 		Name:            "network.request",
-		PayloadTemplate: map[string]any{"url": "", "method": "GET", "headers": map[string]any{}, "body": ""},
-		Inputs:          []Input{{Path: "url", Type: "text", Label: "URL", Required: true}, {Path: "method", Type: "text", Label: "方法"}},
+		PayloadTemplate: map[string]any{"path": "/api/sns/v3/user/info", "method": "GET", "query": map[string]any{}, "headers": map[string]any{}, "timeoutMilliseconds": 15000},
+		Inputs:          []Input{{Path: "path", Type: "text", Label: "API Path", Required: true}, {Path: "method", Type: "text", Label: "方法"}},
 	},
 }
 

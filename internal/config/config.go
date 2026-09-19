@@ -39,6 +39,10 @@ var yamlToEnvKey = []struct {
 	{"mysql", "max_open_conns", "MYSQL_MAX_OPEN_CONNS"},
 	{"mysql", "max_idle_conns", "MYSQL_MAX_IDLE_CONNS"},
 	{"mysql", "conn_max_lifetime_minutes", "MYSQL_CONN_MAX_LIFETIME_MINUTES"},
+	{"redis", "addr", "REDIS_ADDR"},
+	{"redis", "password", "REDIS_PASSWORD"},
+	{"redis", "db", "REDIS_DB"},
+	{"redis", "worker_concurrency", "REDIS_WORKER_CONCURRENCY"},
 	{"storage", "backend", "STORAGE_BACKEND"},
 	{"storage", "local_path", "STORAGE_LOCAL_PATH"},
 	{"storage", "endpoint", "STORAGE_S3_ENDPOINT"},
@@ -92,7 +96,15 @@ type Config struct {
 	BootstrapAdminUser       string
 	BootstrapAdminPass       string
 	MySQL                    MySQLConfig
+	Redis                    RedisConfig
 	Storage                  StorageConfig
+}
+
+type RedisConfig struct {
+	Addr              string
+	Password          string
+	DB                int
+	WorkerConcurrency int
 }
 
 type MySQLConfig struct {
@@ -159,6 +171,12 @@ func Load() (Config, error) {
 			MaxOpenConns:           getInt(values, "MYSQL_MAX_OPEN_CONNS", 32),
 			MaxIdleConns:           getInt(values, "MYSQL_MAX_IDLE_CONNS", 8),
 			ConnMaxLifetimeMinutes: getInt(values, "MYSQL_CONN_MAX_LIFETIME_MINUTES", 10),
+		},
+		Redis: RedisConfig{
+			Addr:              getString(values, "REDIS_ADDR", "127.0.0.1:6379"),
+			Password:          getString(values, "REDIS_PASSWORD", ""),
+			DB:                getInt(values, "REDIS_DB", 0),
+			WorkerConcurrency: getInt(values, "REDIS_WORKER_CONCURRENCY", 4),
 		},
 		Storage: StorageConfig{
 			Backend:   strings.ToLower(getString(values, "STORAGE_BACKEND", "file")),

@@ -1,9 +1,12 @@
 package files
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	storagelocal "r1rpc/internal/storage/local"
 )
 
 func TestDetectImage(t *testing.T) {
@@ -41,8 +44,11 @@ func TestDetectImageRejectsUnknownData(t *testing.T) {
 }
 
 func TestObjectPathRejectsTraversal(t *testing.T) {
-	service := &Service{root: t.TempDir()}
-	if _, err := service.path("../secret"); err == nil {
+	backend, err := storagelocal.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.Open(context.Background(), "../secret"); err == nil {
 		t.Fatal("expected traversal rejection")
 	}
 }

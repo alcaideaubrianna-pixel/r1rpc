@@ -17,6 +17,7 @@ import (
 	"r1rpc/internal/auth"
 	localfiles "r1rpc/internal/files"
 	"r1rpc/internal/model"
+	"r1rpc/internal/observability"
 	"r1rpc/internal/rpc"
 	"regexp"
 	"strconv"
@@ -58,10 +59,18 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/groups/{name}/api-key", s.requireRole("admin", s.handleRotateGroupAPIKey))
 	mux.HandleFunc("DELETE /api/groups/{name}", s.requireRole("admin", s.handleDeleteGroup))
 	mux.HandleFunc("GET /api/devices", s.requireRole("admin", s.handleDevices))
+	mux.HandleFunc("POST /api/devices/debug-pairings", s.requireRole("admin", s.handleCreateDebugPairing))
+	mux.HandleFunc("GET /api/devices/debug-pairings/{id}", s.requireRole("admin", s.handleGetDebugPairing))
 	mux.HandleFunc("GET /api/files", s.requireRole("admin", s.handleFiles))
 	mux.HandleFunc("POST /api/files", s.requireRole("admin", s.handleFiles))
 	mux.HandleFunc("GET /api/files/{id}/content", s.requireRole("admin", s.handleFileContent))
 	mux.HandleFunc("DELETE /api/files/{id}", s.requireRole("admin", s.handleDeleteFile))
+	s.registerImageSearchRoutes(mux)
+	s.registerStorageSettingsRoutes(mux)
+	s.registerXHSProfileRoutes(mux)
+	mux.HandleFunc("POST /api/v1/image-recognition/jobs", s.requireRole("admin", s.handleCreateImageJob))
+	mux.HandleFunc("POST /api/v1/image-recognition/batches", s.requireRole("admin", s.handleCreateImageBatch))
+	mux.HandleFunc("GET /api/v1/image-recognition/batches", s.requireRole("admin", s.handleListImageBatches))
 	mux.HandleFunc("DELETE /api/devices/{clientId}", s.requireRole("admin", s.handleDeleteDevice))
 	mux.HandleFunc("GET /api/monitor/requests", s.requireRole("admin", s.handleMonitorRequests))
 	mux.HandleFunc("GET /api/monitor/request-options", s.requireRole("admin", s.handleMonitorRequestOptions))
@@ -72,12 +81,13 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/metrics/realtime", s.requireRole("admin", s.handleRealtimeMetrics))
 	mux.HandleFunc("GET /api/health/probes", s.requireRole("admin", s.handleHealthProbes))
 	mux.HandleFunc("POST /api/client/login", s.handleClientLogin)
+	mux.HandleFunc("POST /api/client/debug-pair", s.handleClaimDebugPairing)
 	mux.HandleFunc("GET /api/client/ws", s.handleClientWS)
 	mux.HandleFunc("POST /api/client/result", s.requireRole("client", s.handleClientResult))
 	mux.HandleFunc("POST /api/client/logout", s.requireRole("client", s.handleClientLogout))
 	mux.HandleFunc("GET /rpc/clientQueue", s.handleRPCClientQueue)
 	mux.HandleFunc("POST /rpc/{group}/{action}", s.handleInvoke)
-	return mux
+	return observability.HTTPMiddleware(mux)
 }
 
 func (s *Server) requireRole(role string, next func(http.ResponseWriter, *http.Request, *auth.Claims)) http.HandlerFunc {
@@ -359,6 +369,18 @@ func (s *Server) handleGroupActions(w http.ResponseWriter, r *http.Request, clai
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	if name == app.DeviceGroup {
+		found := false
+		for _, action := range actions {
+			if action == "image.recognize" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			actions = append(actions, "image.recognize")
+		}
 	}
 	definitions := make([]actiondefs.Definition, 0, len(actions))
 	for _, action := range actions {
@@ -698,6 +720,7 @@ func (s *Server) handleHealthProbes(w http.ResponseWriter, r *http.Request, clai
 func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ClientID    string         `json:"clientId"`
+		DeviceKey   string         `json:"deviceKey"`
 		Platform    string         `json:"platform"`
 		MaxInFlight int            `json:"maxInFlight"`
 		Extra       map[string]any `json:"extra"`
@@ -745,7 +768,7 @@ func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
 	if req.Actions != nil {
 		actions = *req.Actions
 	}
-	token, err := s.App.LoginClient(r.Context(), req.ClientID, req.Platform, req.MaxInFlight, req.Extra, actionsKnown, actions, s.App.RemoteIP(r))
+	token, err := s.App.LoginClient(r.Context(), req.ClientID, req.DeviceKey, req.Platform, req.MaxInFlight, req.Extra, actionsKnown, actions, s.App.RemoteIP(r))
 	if err != nil {
 		if status, ok := groupErrorHTTPStatus(err); ok {
 			writeError(w, status, err)
@@ -755,6 +778,70 @@ func (s *Server) handleClientLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"token": token, "maxInFlight": req.MaxInFlight, "transport": "websocket", "wsUrl": s.clientWSURL(r, token)})
+}
+
+func (s *Server) handleCreateDebugPairing(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	pairing, err := s.App.DebugPairs.Create(time.Now())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id": pairing.ID, "code": pairing.Code, "expiresAt": pairing.ExpiresAt,
+	})
+}
+
+func (s *Server) handleGetDebugPairing(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
+	pairing, err := s.App.DebugPairs.Get(r.PathValue("id"), time.Now())
+	if err != nil {
+		status := http.StatusNotFound
+		if errors.Is(err, app.ErrDebugPairingExpired) {
+			status = http.StatusGone
+		}
+		writeError(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": pairing.ID, "expiresAt": pairing.ExpiresAt,
+		"claimed": !pairing.ClaimedAt.IsZero(), "claimedAt": pairing.ClaimedAt, "clientId": pairing.ClientID,
+	})
+}
+
+func (s *Server) handleClaimDebugPairing(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+	var req struct {
+		Code     string `json:"code"`
+		ClientID string `json:"clientId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.Code = strings.TrimSpace(req.Code)
+	req.ClientID = strings.TrimSpace(req.ClientID)
+	if req.Code == "" || req.ClientID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("code 和 clientId 不能为空"))
+		return
+	}
+	pairing, err := s.App.DebugPairs.Claim(req.Code, req.ClientID, time.Now())
+	if err != nil {
+		status := http.StatusUnauthorized
+		if errors.Is(err, app.ErrDebugPairingExpired) {
+			status = http.StatusGone
+		} else if errors.Is(err, app.ErrDebugPairingClaimed) {
+			status = http.StatusConflict
+		}
+		writeError(w, status, err)
+		return
+	}
+	group, err := s.App.Store.GetGroupByName(r.Context(), app.DeviceGroup)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"group": group.GroupName, "deviceKey": group.DeviceKey, "expiresAt": pairing.ExpiresAt,
+	})
 }
 
 func cleanDeviceHeader(value string) string {
@@ -863,6 +950,10 @@ func (s *Server) handleInvoke(w http.ResponseWriter, r *http.Request) {
 	claims, err := s.authenticateInvokeRequest(r, req, group)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, err)
+		return
+	}
+	if actionName == "image.recognize" {
+		s.handleRecognizeAction(w, r, claims, req)
 		return
 	}
 

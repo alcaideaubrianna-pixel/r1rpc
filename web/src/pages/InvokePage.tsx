@@ -17,6 +17,7 @@ import { RocketIcon } from '@radix-ui/react-icons'
 import { get, postWithHeaders, upload, ApiError } from '../api/client'
 import { useFetch } from '../lib/useFetch'
 import { notify } from '../lib/toast'
+import { randomHexID } from '../lib/id'
 import { cnError } from '../lib/errors'
 import { prettyJson } from '../lib/format'
 import type { ActionDefinition, GroupInfo, Device, StoredFile } from '../types'
@@ -408,7 +409,7 @@ function formatBytes(bytes: number) {
 }
 
 function createTraceId() {
-  return crypto.randomUUID().replaceAll('-', '')
+  return randomHexID()
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

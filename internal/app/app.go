@@ -21,6 +21,12 @@ import (
 	localfiles "r1rpc/internal/files"
 	"r1rpc/internal/model"
 	"r1rpc/internal/rpc"
+	"r1rpc/internal/service/imagesearch"
+	"r1rpc/internal/service/imagetask"
+	"r1rpc/internal/service/storagesetting"
+	"r1rpc/internal/service/xhsprofile"
+	storagecontract "r1rpc/internal/storage"
+	storagelocal "r1rpc/internal/storage/local"
 	"r1rpc/internal/store"
 )
 
@@ -90,11 +96,16 @@ type persistTask struct {
 }
 
 type App struct {
-	Config *config.Config
-	Store  *store.Store
-	Tokens *auth.TokenManager
-	Hub    *rpc.Hub
-	Files  *localfiles.Service
+	Config          *config.Config
+	Store           *store.Store
+	Tokens          *auth.TokenManager
+	Hub             *rpc.Hub
+	Files           *localfiles.Service
+	ImageTasks      *imagetask.Service
+	ImageSearch     *imagesearch.Service
+	StorageSettings *storagesetting.Service
+	XHSProfiles     *xhsprofile.Service
+	DebugPairs      *DebugPairingManager
 
 	presenceMu        sync.Mutex
 	lastPresenceFlush map[string]time.Time
@@ -152,16 +163,29 @@ func New(cfg config.Config, st *store.Store) *App {
 	hub := rpc.NewHub(clientQueueSize, hubMaxInFlight)
 	hub.ConfigureExecutionPolicyWithGrace(cfg.QueueLeaseDuration, cfg.QueueLeaseReaperInterval, cfg.ExecutionGrace, cfg.ActionDefaultMaxInFlight)
 	hub.ConfigureQueueRetention(cfg.ClientQueueIdleTTL)
-	fileService, err := localfiles.New(cfg.Storage.LocalPath, st)
-	if err != nil {
-		panic(fmt.Sprintf("初始化本地文件存储失败: %v", err))
+	var storageBackend storagecontract.Backend
+	switch strings.ToLower(strings.TrimSpace(cfg.Storage.Backend)) {
+	case "", "file", "local":
+		localBackend, err := storagelocal.New(cfg.Storage.LocalPath)
+		if err != nil {
+			panic(fmt.Sprintf("初始化本地文件存储失败: %v", err))
+		}
+		storageBackend = localBackend
+	default:
+		panic(fmt.Sprintf("暂不支持存储后端 %q，请使用 local/file", cfg.Storage.Backend))
 	}
+	fileService := localfiles.New(storageBackend)
 	return &App{
 		Config:            &cfg,
 		Store:             st,
 		Tokens:            auth.NewTokenManager(cfg.JWTSecret),
 		Hub:               hub,
 		Files:             fileService,
+		ImageTasks:        imagetask.New(st),
+		ImageSearch:       imagesearch.New(fileService),
+		StorageSettings:   storagesetting.New(cfg.JWTSecret),
+		XHSProfiles:       xhsprofile.New(fileService),
+		DebugPairs:        NewDebugPairingManager(2 * time.Minute),
 		lastPresenceFlush: map[string]time.Time{},
 		persistCh:         make(chan persistTask, queueSize),
 		persistAccepting:  true,
@@ -267,7 +291,7 @@ func (a *App) LoginAdmin(ctx context.Context, username, password string) (string
 	return token, user, err
 }
 
-func (a *App) LoginClient(ctx context.Context, clientID, platform string, maxInFlight int, extra map[string]any, actionsKnown bool, actions []string, ip string) (string, error) {
+func (a *App) LoginClient(ctx context.Context, clientID, deviceKey, platform string, maxInFlight int, extra map[string]any, actionsKnown bool, actions []string, ip string) (string, error) {
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
 		return "", fmt.Errorf("clientId 不能为空")
@@ -282,6 +306,9 @@ func (a *App) LoginClient(ctx context.Context, clientID, platform string, maxInF
 	}
 	if !group.Enabled {
 		return "", &GroupError{Kind: ErrGroupDisabled, Group: groupName}
+	}
+	if !secureTextEqual(deviceKey, group.DeviceKey) {
+		return "", fmt.Errorf("设备密钥无效")
 	}
 	if platform == "" {
 		platform = "frida"

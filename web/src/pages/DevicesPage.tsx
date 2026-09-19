@@ -1,7 +1,8 @@
-import { useState } from 'react'
-import { Flex, Card, Table, Button, Badge, Text, Select, Spinner, Code, AlertDialog } from '@radix-ui/themes'
-import { ReloadIcon, TrashIcon } from '@radix-ui/react-icons'
-import { get, del } from '../api/client'
+import { useEffect, useMemo, useState } from 'react'
+import { Flex, Card, Table, Button, Badge, Text, Select, Spinner, Code, AlertDialog, Dialog, TextField, Callout } from '@radix-ui/themes'
+import { MobileIcon, ReloadIcon, TrashIcon } from '@radix-ui/react-icons'
+import { QRCodeSVG } from 'qrcode.react'
+import { get, del, post } from '../api/client'
 import { useFetch } from '../lib/useFetch'
 import { notify } from '../lib/toast'
 import { fmtTime } from '../lib/format'
@@ -36,6 +37,7 @@ export default function DevicesPage() {
               <Select.Item value="offline">离线</Select.Item>
             </Select.Content>
           </Select.Root>
+          <DebugPairingButton onPaired={reload} />
           <Button variant="soft" color="gray" onClick={refresh}>
             <ReloadIcon /> 刷新
           </Button>
@@ -111,6 +113,115 @@ export default function DevicesPage() {
         )}
       </Card>
     </Flex>
+  )
+}
+
+interface DebugPairing {
+  id: string
+  code: string
+  expiresAt: string
+}
+
+interface DebugPairingStatus {
+  claimed: boolean
+  clientId?: string
+}
+
+function DebugPairingButton({ onPaired }: { onPaired: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [server, setServer] = useState(window.location.origin)
+  const [pairing, setPairing] = useState<DebugPairing | null>(null)
+  const [pairedClient, setPairedClient] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const payload = useMemo(() => pairing ? JSON.stringify({
+    type: 'r1rpc-debug-pair',
+    version: 1,
+    server: server.replace(/\/$/, ''),
+    code: pairing.code,
+  }) : '', [pairing, server])
+
+  const localOnly = /^(https?:\/\/)?(localhost|127\.0\.0\.1)(:|\/|$)/i.test(server)
+
+  async function createPairing() {
+    setBusy(true)
+    setPairedClient('')
+    try {
+      setPairing(await post<DebugPairing>('/api/devices/debug-pairings', {}))
+    } catch (error) {
+      notify.error(error, '创建配对码失败')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function changeOpen(next: boolean) {
+    setOpen(next)
+    if (next) void createPairing()
+    else {
+      setPairing(null)
+      setPairedClient('')
+    }
+  }
+
+  useEffect(() => {
+    if (!open || !pairing || pairedClient) return
+    const timer = window.setInterval(async () => {
+      try {
+        const status = await get<DebugPairingStatus>(`/api/devices/debug-pairings/${encodeURIComponent(pairing.id)}`)
+        if (status.claimed) {
+          setPairedClient(status.clientId || '已注册设备')
+          onPaired()
+          notify.success(`设备 ${status.clientId || ''} 注册成功`)
+        }
+      } catch {
+        window.clearInterval(timer)
+      }
+    }, 1500)
+    return () => window.clearInterval(timer)
+  }, [open, pairing, pairedClient, onPaired])
+
+  return (
+    <Dialog.Root open={open} onOpenChange={changeOpen}>
+      <Dialog.Trigger>
+        <Button><MobileIcon /> 调试设备注册</Button>
+      </Dialog.Trigger>
+      <Dialog.Content maxWidth="440px">
+        <Dialog.Title>调试设备注册</Dialog.Title>
+        <Flex direction="column" gap="3" mt="3">
+          <label>
+            <Text as="div" size="2" weight="medium" mb="1">设备可访问地址</Text>
+            <TextField.Root value={server} onChange={(event) => setServer(event.target.value)} placeholder="http://192.168.1.10:9876" />
+          </label>
+          {localOnly && (
+            <Callout.Root color="amber" size="1">
+              <Callout.Text>手机无法访问 localhost，请改为电脑的局域网 IP。</Callout.Text>
+            </Callout.Root>
+          )}
+          <Flex justify="center" align="center" style={{ minHeight: 248 }}>
+            {busy && <Spinner size="3" />}
+            {!busy && pairing && !pairedClient && (
+              <QRCodeSVG value={payload} size={232} level="M" marginSize={2} />
+            )}
+            {pairedClient && (
+              <Flex direction="column" align="center" gap="2">
+                <Badge color="green" size="2">注册成功</Badge>
+                <Code>{pairedClient}</Code>
+              </Flex>
+            )}
+          </Flex>
+          {pairing && !pairedClient && (
+            <Text size="1" color="gray" align="center">
+              配对码将在 {fmtTime(pairing.expiresAt)} 过期
+            </Text>
+          )}
+        </Flex>
+        <Flex gap="3" mt="4" justify="end">
+          <Button variant="soft" color="gray" onClick={createPairing} loading={busy}>刷新二维码</Button>
+          <Dialog.Close><Button variant="soft">关闭</Button></Dialog.Close>
+        </Flex>
+      </Dialog.Content>
+    </Dialog.Root>
   )
 }
 

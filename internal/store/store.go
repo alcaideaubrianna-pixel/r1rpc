@@ -117,6 +117,12 @@ func ensureColumns(ctx context.Context, db *sql.DB, schema string) error {
 		{Table: "groups", Name: "api_key", Def: "VARCHAR(128) NOT NULL DEFAULT ''"},
 		{Table: "devices", Name: "extra_json", Def: "LONGTEXT NULL"},
 		{Table: "devices", Name: "actions_json", Def: "LONGTEXT NULL"},
+		{Table: "image_jobs", Name: "normalized_response_json", Def: "LONGTEXT NULL"},
+		{Table: "image_search_responses", Name: "raw_json", Def: "LONGTEXT NULL"},
+		{Table: "image_candidates", Name: "image_file_id", Def: "CHAR(32) NOT NULL DEFAULT ''"},
+		{Table: "image_candidate_images", Name: "phash_distance", Def: "INT NULL"},
+		{Table: "image_candidate_images", Name: "dhash_distance", Def: "INT NULL"},
+		{Table: "image_candidate_images", Name: "ahash_distance", Def: "INT NULL"},
 	}
 	for _, c := range columns {
 		exists, err := columnExists(ctx, db, schema, c.Table, c.Name)

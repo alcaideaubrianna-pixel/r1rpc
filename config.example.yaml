@@ -26,6 +26,12 @@ mysql:
   max_idle_conns: 8
   conn_max_lifetime_minutes: 10
 
+redis:
+  addr: "127.0.0.1:6379"
+  password: ""
+  db: 0
+  worker_concurrency: 4
+
 storage:
   backend: "file"
   local_path: "./data/uploads"

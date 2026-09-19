@@ -6,6 +6,7 @@ import { useFetch } from '../lib/useFetch'
 import { notify } from '../lib/toast'
 import { fmtTime } from '../lib/format'
 import type { StoredFile } from '../types'
+import { StorageSettingsDialog } from '../features/files/StorageSettingsDialog'
 
 const accept = 'image/jpeg,image/png,image/heic,image/heif'
 
@@ -49,6 +50,7 @@ export default function FilesPage() {
       <Flex justify="between" align="center">
         <Text size="2" color="gray">本地图片最大 12 MiB，支持 JPEG、PNG、HEIC、HEIF</Text>
         <Flex gap="2">
+		  <StorageSettingsDialog />
           <input ref={inputRef} hidden type="file" accept={accept} onChange={(e) => uploadFile(e.target.files?.[0])} />
           <Button loading={uploading} onClick={() => inputRef.current?.click()}><UploadIcon /> 上传图片</Button>
           <Button variant="soft" color="gray" onClick={reload}><ReloadIcon /> 刷新</Button>

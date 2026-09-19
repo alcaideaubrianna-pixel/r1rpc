@@ -39,6 +39,8 @@ clients/xposed-demo/local.properties
 # 本地配置（含密钥，勿提交）
 config.yaml
 r1rpc.yaml
+hack/config.yaml
+data/
 
 # Node
 node_modules/
