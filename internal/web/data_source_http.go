@@ -45,18 +45,19 @@ func (s *Server) registerDataSourceRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, 200, item)
 	}))
-	mux.HandleFunc("GET /api/v1/data-sources/{id}/channels", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
-		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		result, err := s.App.DataSources.Channels(r.Context(), r.PathValue("id"), r.URL.Query().Get("cursor"), limit)
+	mux.HandleFunc("POST /api/v1/data-sources/{id}/channels/sync", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
+		count, err := s.App.DataSources.SyncChannels(r.Context(), r.PathValue("id"))
 		if err != nil {
-			g.Log().Errorf(r.Context(), "读取数据源频道失败 sourceId=%s err=%v", r.PathValue("id"), err)
+			g.Log().Errorf(r.Context(), "同步数据源频道失败 sourceId=%s err=%v", r.PathValue("id"), err)
 			writeError(w, 502, err)
 			return
 		}
-		writeJSON(w, 200, result)
+		writeJSON(w, 200, map[string]any{"syncedCount": count})
 	}))
-	mux.HandleFunc("GET /api/v1/data-sources/{id}/channels/search", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
-		result, err := s.App.DataSources.SearchChannels(r.PathValue("id"), r.URL.Query().Get("q"))
+	mux.HandleFunc("GET /api/v1/source-channels", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		pageSize, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
+		result, err := s.App.DataSources.ListChannels(r.Context(), r.URL.Query().Get("dataSourceId"), r.URL.Query().Get("q"), page, pageSize)
 		if err != nil {
 			writeError(w, 500, err)
 			return

@@ -12,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"r1rpc/internal/dao"
@@ -28,24 +27,15 @@ type Enqueuer interface {
 	EnqueueSourceScan(context.Context, string, int) error
 }
 type Service struct {
-	key          [32]byte
-	enqueuer     Enqueuer
-	cacheMu      sync.Mutex
-	channelCache map[string]channelCacheEntry
+	key      [32]byte
+	enqueuer Enqueuer
 }
-type ChannelPage struct {
-	Items      []feiniu.Channel `json:"items"`
-	NextCursor string           `json:"nextCursor"`
-	HasMore    bool             `json:"hasMore"`
-	Cached     bool             `json:"cached"`
-}
-type ChannelSearchResult struct {
-	Items  []feiniu.Channel `json:"items"`
-	Cached bool             `json:"cached"`
-}
-type channelCacheEntry struct {
-	page      ChannelPage
-	expiresAt time.Time
+type SourceChannelPage struct {
+	Items      []entity.SourceChannels `json:"items"`
+	Page       int                     `json:"page"`
+	PageSize   int                     `json:"pageSize"`
+	Total      int64                   `json:"total"`
+	TotalPages int                     `json:"totalPages"`
 }
 type Source struct {
 	ID               string    `json:"id"`
@@ -201,9 +191,7 @@ func (s *Service) failScan(ctx context.Context, task entity.ChannelScanTasks, ca
 	return cause
 }
 
-func New(secret string) *Service {
-	return &Service{key: sha256.Sum256([]byte(secret)), channelCache: make(map[string]channelCacheEntry)}
-}
+func New(secret string) *Service { return &Service{key: sha256.Sum256([]byte(secret))} }
 func (s *Service) List(ctx context.Context) ([]Source, error) {
 	var rows []entity.DataSources
 	if err := dao.DataSources.Ctx(ctx).OrderDesc(dao.DataSources.Columns().CreatedAt).Scan(&rows); err != nil {
@@ -269,7 +257,6 @@ func (s *Service) Update(ctx context.Context, id string, in SaveInput) (*Source,
 	if _, err := dao.DataSources.Ctx(ctx).Where(dao.DataSources.Columns().Id, id).Data(update).Update(); err != nil {
 		return nil, gerror.Wrap(err, "更新数据源失败")
 	}
-	s.clearChannelCache(id)
 	rows, err := s.List(ctx)
 	if err != nil {
 		return nil, err
@@ -281,70 +268,82 @@ func (s *Service) Update(ctx context.Context, id string, in SaveInput) (*Source,
 	}
 	return nil, gerror.New("数据源更新后读取失败")
 }
-func (s *Service) Channels(ctx context.Context, id, cursor string, limit int) (*ChannelPage, error) {
-	if limit < 1 || limit > 100 {
-		limit = 20
-	}
-	cacheKey := fmt.Sprintf("%s:%d:%s", id, limit, cursor)
-	s.cacheMu.Lock()
-	if cached, ok := s.channelCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
-		page := cached.page
-		page.Cached = true
-		s.cacheMu.Unlock()
-		return &page, nil
-	}
-	s.cacheMu.Unlock()
+func (s *Service) SyncChannels(ctx context.Context, id string) (int, error) {
 	client, err := s.client(ctx, id)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	page, err := client.Channels(ctx, limit, cursor, "")
+	var (
+		cursor string
+		count  int
+	)
+	for pageNumber := 0; pageNumber < 1000; pageNumber++ {
+		page, requestErr := client.Channels(ctx, 100, cursor, "")
+		if requestErr != nil {
+			return count, requestErr
+		}
+		for _, channel := range page.Items {
+			if err = s.saveChannel(ctx, id, channel); err != nil {
+				return count, err
+			}
+			count++
+		}
+		if !page.HasMore || page.NextCursor == "" {
+			return count, nil
+		}
+		cursor = page.NextCursor
+	}
+	return count, gerror.New("频道同步分页超过安全上限")
+}
+
+func (s *Service) saveChannel(ctx context.Context, sourceID string, channel feiniu.Channel) error {
+	columns := dao.SourceChannels.Columns()
+	var current entity.SourceChannels
+	if err := dao.SourceChannels.Ctx(ctx).
+		Where(columns.DataSourceId, sourceID).
+		Where(columns.ChannelId, channel.ID).
+		Scan(&current); err != nil {
+		return err
+	}
+	raw, _ := json.Marshal(channel)
+	data := do.SourceChannels{Title: channel.Title, Username: channel.Username, ChatType: channel.ChatType, RawJson: string(raw), LastSyncedAt: time.Now()}
+	if current.Id != "" {
+		_, err := dao.SourceChannels.Ctx(ctx).Where(columns.Id, current.Id).Data(data).Update()
+		return err
+	}
+	data.Id = guid.S()
+	data.DataSourceId = sourceID
+	data.ChannelId = channel.ID
+	_, err := dao.SourceChannels.Ctx(ctx).Data(data).Insert()
+	return err
+}
+
+func (s *Service) ListChannels(ctx context.Context, sourceID, keyword string, page, pageSize int) (*SourceChannelPage, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	columns := dao.SourceChannels.Columns()
+	model := dao.SourceChannels.Ctx(ctx)
+	if sourceID != "" {
+		model = model.Where(columns.DataSourceId, sourceID)
+	}
+	if keyword = strings.TrimSpace(keyword); keyword != "" {
+		model = model.WhereLike(columns.Title, "%"+keyword+"%")
+	}
+	total, err := model.Count()
 	if err != nil {
 		return nil, err
 	}
-	result := &ChannelPage{Items: page.Items, NextCursor: page.NextCursor, HasMore: page.HasMore}
-	s.cacheMu.Lock()
-	s.channelCache[cacheKey] = channelCacheEntry{page: *result, expiresAt: time.Now().Add(5 * time.Minute)}
-	s.cacheMu.Unlock()
-	return result, nil
+	var rows []entity.SourceChannels
+	if err = model.OrderDesc(columns.LastSyncedAt).Page(page, pageSize).Scan(&rows); err != nil {
+		return nil, err
+	}
+	return &SourceChannelPage{Items: rows, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
 }
 
-func (s *Service) SearchChannels(id, keyword string) (*ChannelSearchResult, error) {
-	keyword = strings.TrimSpace(strings.ToLower(keyword))
-	if keyword == "" {
-		return &ChannelSearchResult{Items: []feiniu.Channel{}, Cached: true}, nil
-	}
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
-	seen := make(map[int64]struct{})
-	items := make([]feiniu.Channel, 0)
-	now := time.Now()
-	for key, entry := range s.channelCache {
-		if !strings.HasPrefix(key, id+":") || now.After(entry.expiresAt) {
-			continue
-		}
-		for _, channel := range entry.page.Items {
-			if _, ok := seen[channel.ID]; ok {
-				continue
-			}
-			if strings.Contains(strings.ToLower(channel.Title), keyword) {
-				seen[channel.ID] = struct{}{}
-				items = append(items, channel)
-			}
-		}
-	}
-	return &ChannelSearchResult{Items: items, Cached: true}, nil
-}
-
-func (s *Service) clearChannelCache(id string) {
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
-	for key := range s.channelCache {
-		if strings.HasPrefix(key, id+":") {
-			delete(s.channelCache, key)
-		}
-	}
-}
 func (s *Service) client(ctx context.Context, id string) (*feiniu.Client, error) {
 	var row entity.DataSources
 	if err := dao.DataSources.Ctx(ctx).Where(dao.DataSources.Columns().Id, id).Scan(&row); err != nil {

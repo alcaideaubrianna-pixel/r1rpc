@@ -92,6 +92,22 @@ CREATE TABLE IF NOT EXISTS channel_scan_tasks (
     INDEX idx_channel_scan_tasks_source_channel (data_source_id, channel_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS source_channels (
+    id CHAR(32) PRIMARY KEY,
+    data_source_id CHAR(32) NOT NULL,
+    channel_id BIGINT NOT NULL,
+    title VARCHAR(512) NOT NULL DEFAULT '',
+    username VARCHAR(255) NOT NULL DEFAULT '',
+    chat_type VARCHAR(64) NOT NULL DEFAULT '',
+    raw_json LONGTEXT NULL,
+    last_synced_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_source_channels_source_channel (data_source_id, channel_id),
+    INDEX idx_source_channels_source_title (data_source_id, title),
+    INDEX idx_source_channels_synced (last_synced_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS source_notes (
     id CHAR(32) PRIMARY KEY,
     data_source_id CHAR(32) NOT NULL,
