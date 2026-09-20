@@ -103,6 +103,11 @@ func (s *Service) load(ctx context.Context, userID string) (*Profile, error) {
 	if record.UserId == "" {
 		return nil, nil
 	}
+	if !usableProfileRecord(record) {
+		// 历史版本可能把 code=-100 的失败响应写入缓存，不能阻断后续真实请求。
+		_, _ = dao.XhsUserProfiles.Ctx(ctx).Where(dao.XhsUserProfiles.Columns().UserId, userID).Delete()
+		return nil, nil
+	}
 	avatarURL := record.AvatarUrl
 	if record.AvatarFileId != "" {
 		if value, err := s.files.URL(ctx, record.AvatarFileId); err == nil {
@@ -113,6 +118,34 @@ func (s *Service) load(ctx context.Context, userID string) (*Profile, error) {
 		Description: record.Description, Gender: record.Gender, IPLocation: record.IpLocation, FansCount: record.FansCount,
 		LikedCount: record.LikedCount, CollectedCount: record.CollectedCount, NoteCount: record.NoteCount,
 		ShareLink: record.ShareLink, FetchedAt: record.FetchedAt}, nil
+}
+
+func usableProfileRecord(record entity.XhsUserProfiles) bool {
+	if strings.TrimSpace(record.Nickname) == "" && strings.TrimSpace(record.RedId) == "" {
+		return false
+	}
+	if strings.TrimSpace(record.RawJson) == "" {
+		return true
+	}
+	var raw map[string]any
+	if json.Unmarshal([]byte(record.RawJson), &raw) != nil {
+		return false
+	}
+	if code, ok := raw["code"].(float64); ok && code != 0 {
+		return false
+	}
+	if success, ok := raw["success"].(bool); ok && !success {
+		return false
+	}
+	if body, ok := raw["body"].(map[string]any); ok {
+		if code, ok := body["code"].(float64); ok && code != 0 {
+			return false
+		}
+		if success, ok := body["success"].(bool); ok && !success {
+			return false
+		}
+	}
+	return true
 }
 
 func candidateContext(ctx context.Context, candidateID string) (string, string, error) {
