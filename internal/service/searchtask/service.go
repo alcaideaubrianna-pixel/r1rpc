@@ -228,14 +228,14 @@ func (s *Service) refreshTask(ctx context.Context, taskID string) error {
 		}
 		counts[status]++
 		if item.FilterStatus == "blocked" {
-			counts["filtered"]++
+			counts["filtered_items"]++
 		}
 		if matched == 1 {
 			counts["matched"]++
 		}
 	}
 	failed := counts["failed"] + counts["partial_failed"]
-	finished := counts["completed"] + failed + counts["cancelled"]
+	finished := counts["completed"] + failed + counts["cancelled"] + counts["filtered"]
 	status := "running"
 	if len(items) > 0 && finished == len(items) {
 		status = "completed"
@@ -245,14 +245,14 @@ func (s *Service) refreshTask(ctx context.Context, taskID string) error {
 			status = "partial_failed"
 		}
 	}
-	_, err := dao.SearchTasks.Ctx(ctx).Where(dao.SearchTasks.Columns().Id, taskID).Data(do.SearchTasks{Status: status, TotalCount: len(items), SearchCount: len(items) - counts["filtered"], FilteredCount: counts["filtered"], MatchedCount: counts["matched"], FailedCount: failed}).Update()
+	_, err := dao.SearchTasks.Ctx(ctx).Where(dao.SearchTasks.Columns().Id, taskID).Data(do.SearchTasks{Status: status, TotalCount: len(items), SearchCount: len(items) - counts["filtered_items"], FilteredCount: counts["filtered_items"], MatchedCount: counts["matched"], FailedCount: failed}).Update()
 	return err
 }
 
 func (s *Service) completedCount(ctx context.Context, taskID string) (int, error) {
 	columns := dao.SearchTaskItems.Columns()
 	return dao.SearchTaskItems.Ctx(ctx).Where(columns.SearchTaskId, taskID).
-		WhereIn(columns.Status, []string{"completed", "partial_failed", "failed", "cancelled"}).Count()
+		WhereIn(columns.Status, []string{"completed", "partial_failed", "failed", "cancelled", "filtered"}).Count()
 }
 func cleanKeywords(values []string) []string {
 	out := make([]string, 0, len(values))

@@ -6,8 +6,11 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" -o /out/r1rpc-server ./cmd/server
 
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata
+FROM debian:bookworm-slim
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates tzdata wget tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-eng \
+  && tesseract --list-langs | grep -q chi_sim \
+  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /out/r1rpc-server /app/r1rpc-server
 EXPOSE 9876

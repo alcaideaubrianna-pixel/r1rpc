@@ -58,6 +58,8 @@ services:
       MYSQL_USER: root
       MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-r1rpc_dev}
       MYSQL_DB: ${MYSQL_DATABASE:-r1rpc}
+      OCR_TESSERACT_BIN: ${OCR_TESSERACT_BIN:-tesseract}
+      OCR_LANGUAGES: ${OCR_LANGUAGES:-chi_sim+eng}
     ports:
       - "${R1RPC_HTTP_PORT:-9876}:9876"
     healthcheck:

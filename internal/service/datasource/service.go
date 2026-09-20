@@ -171,11 +171,12 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 			return err
 		}
 		for _, media := range note.Media {
-			if media.AssetType != "image" || media.PreviewURI == "" {
+			downloadURL := media.DownloadURL()
+			if media.AssetType != "image" || downloadURL == "" {
 				continue
 			}
 			mediaRaw, _ := json.Marshal(media)
-			_, err = dao.SourceNoteImages.Ctx(ctx).Data(do.SourceNoteImages{Id: guid.S(), NoteId: saved.Id, ExternalAssetId: fmt.Sprint(media.AssetID), AssetType: media.AssetType, SourceUrl: media.PreviewURI, Phash: media.PHash, DownloadStatus: "pending", PreprocessStatus: "pending", FilterDecision: "pending", RawJson: string(mediaRaw), ImageIndex: media.Sort}).InsertIgnore()
+			_, err = dao.SourceNoteImages.Ctx(ctx).Data(do.SourceNoteImages{Id: guid.S(), NoteId: saved.Id, ExternalAssetId: fmt.Sprint(media.AssetID), AssetType: media.AssetType, SourceUrl: downloadURL, Phash: media.PHash, DownloadStatus: "pending", PreprocessStatus: "pending", FilterDecision: "pending", RawJson: string(mediaRaw), ImageIndex: media.Sort}).InsertIgnore()
 			if err != nil {
 				return err
 			}

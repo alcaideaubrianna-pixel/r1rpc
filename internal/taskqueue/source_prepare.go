@@ -8,12 +8,14 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"r1rpc/internal/dao"
 	"r1rpc/internal/imaging"
 	"r1rpc/internal/model/do"
 	"r1rpc/internal/model/entity"
 	"r1rpc/internal/model/input"
+	"r1rpc/internal/ocr"
 
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/util/guid"
@@ -138,20 +140,23 @@ func (p *Processor) createSourceSearchItem(ctx context.Context, scan entity.Chan
 	if item.ImageSearchRequestId != "" {
 		return nil
 	}
-	images, err := p.prepareNoteImages(ctx, scan.DataSourceId, note.Id)
+	prepared, err := p.prepareNoteImages(ctx, scan.DataSourceId, note.Id, config)
 	if err != nil {
-		_, _ = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "failed", ErrorMessage: err.Error()}).Update()
+		_, _ = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "failed", PreprocessStatus: "failed", ErrorMessage: err.Error()}).Update()
 		return nil
 	}
-	if len(images) == 0 {
-		_, _ = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "failed", ErrorMessage: "资料没有可用图片"}).Update()
-		return nil
-	}
-	if config.OcrEnabled == 1 {
-		message := "OCR 已启用，但 OCR 处理器尚未配置"
-		_, _ = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{
-			Status: "failed", PreprocessStatus: "pending", FilterStatus: "pending", ErrorMessage: message,
-		}).Update()
+	if len(prepared.Items) == 0 {
+		if prepared.Blocked > 0 && prepared.Failed == 0 {
+			_, _ = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{
+				Status: "filtered", PreprocessStatus: "completed", FilterStatus: "blocked", FilterReason: "全部图片命中 OCR 屏蔽关键字",
+			}).Update()
+			return nil
+		}
+		message := "资料没有可用图片"
+		if prepared.Failed > 0 {
+			message = fmt.Sprintf("%d 张图片下载或 OCR 失败", prepared.Failed)
+		}
+		_, _ = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "failed", PreprocessStatus: "failed", ErrorMessage: message}).Update()
 		return nil
 	}
 	priority := scan.Priority
@@ -165,7 +170,7 @@ func (p *Processor) createSourceSearchItem(ctx context.Context, scan entity.Chan
 		Source: "channel_scan_item", ExternalID: "source-note:" + searchTaskID + ":" + note.Id,
 		Priority: priority, PipelineName: config.PipelineName, RequestedBySubject: note.Title,
 		Groups: []input.ImageSearchGroup{{
-			ExternalID: note.ExternalNoteId, Images: images,
+			ExternalID: note.ExternalNoteId, Images: prepared.Items,
 			MatchPolicy: map[string]any{"scoreThreshold": config.ScoreThreshold, "maxPHashDistance": config.MaxPhashDistance, "maxDHashDistance": config.MaxDhashDistance, "maxAHashDistance": config.MaxAhashDistance, "maxCandidates": config.MaxCandidates},
 		}},
 	})
@@ -173,7 +178,11 @@ func (p *Processor) createSourceSearchItem(ctx context.Context, scan entity.Chan
 		_, _ = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "failed", ErrorMessage: err.Error()}).Update()
 		return nil
 	}
-	_, err = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "running", PreprocessStatus: "completed", FilterStatus: "passed", ImageSearchRequestId: request.ID}).Update()
+	filterReason := ""
+	if prepared.Blocked > 0 {
+		filterReason = fmt.Sprintf("OCR 已屏蔽 %d 张图片", prepared.Blocked)
+	}
+	_, err = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "running", PreprocessStatus: "completed", FilterStatus: "passed", FilterReason: filterReason, ImageSearchRequestId: request.ID, ErrorMessage: ""}).Update()
 	return err
 }
 
@@ -183,13 +192,24 @@ func sourceSearchTaskID(scan entity.ChannelScanTasks) string {
 	return fmt.Sprintf("%x", sum[:16])
 }
 
-func (p *Processor) prepareNoteImages(ctx context.Context, sourceID, noteID string) ([]input.ImageSearchItem, error) {
+type preparedImages struct {
+	Items   []input.ImageSearchItem
+	Blocked int
+	Failed  int
+}
+
+func (p *Processor) prepareNoteImages(ctx context.Context, sourceID, noteID string, config entity.SearchConfigs) (preparedImages, error) {
 	columns := dao.SourceNoteImages.Columns()
 	var records []entity.SourceNoteImages
 	if err := dao.SourceNoteImages.Ctx(ctx).Where(columns.NoteId, noteID).OrderAsc(columns.ImageIndex).Scan(&records); err != nil {
-		return nil, err
+		return preparedImages{}, err
 	}
-	items := make([]input.ImageSearchItem, 0, len(records))
+	result := preparedImages{Items: make([]input.ImageSearchItem, 0, len(records))}
+	keywords, err := searchOCRKeywords(config.OcrKeywordsJson)
+	if err != nil {
+		return result, err
+	}
+	processor := ocr.NewTesseract()
 	for _, record := range records {
 		fileID := record.FileId
 		if fileID == "" {
@@ -198,29 +218,87 @@ func (p *Processor) prepareNoteImages(ctx context.Context, sourceID, noteID stri
 			assetID, parseErr := strconv.ParseInt(record.ExternalAssetId, 10, 64)
 			var data []byte
 			var err error
-			if parseErr == nil && assetID > 0 {
+			parsedURL, _ := url.Parse(strings.TrimSpace(record.SourceUrl))
+			if parsedURL != nil && parsedURL.IsAbs() && parsedURL.Scheme == "https" {
+				data, err = imaging.NewDownloader().Download(ctx, record.SourceUrl)
+			} else if parseErr == nil && assetID > 0 {
 				data, err = p.app.DataSources.DownloadAsset(ctx, sourceID, assetID)
 			} else {
 				data, err = p.downloadSourceImage(ctx, sourceID, record.SourceUrl)
 			}
 			if err != nil {
 				p.failSourceImage(ctx, record.Id, err)
+				result.Failed++
 				continue
 			}
 			stored, err := p.app.Files.SaveBytes(ctx, data, "source-image.jpg", 0)
 			if err != nil {
 				p.failSourceImage(ctx, record.Id, err)
+				result.Failed++
 				continue
 			}
 			fileID = stored.ID
 			_, err = dao.SourceNoteImages.Ctx(ctx).Where(columns.Id, record.Id).Data(do.SourceNoteImages{FileId: stored.ID, Sha256: stored.SHA256, DownloadStatus: "downloaded", FilterReason: ""}).Update()
 			if err != nil {
-				return nil, err
+				return result, err
 			}
 		}
-		items = append(items, input.ImageSearchItem{FileID: fileID})
+		if config.OcrEnabled == 1 {
+			blocked, recognizeErr := p.preprocessSourceImage(ctx, processor, record, fileID, keywords, config.OcrMatchMode)
+			if recognizeErr != nil {
+				result.Failed++
+				continue
+			}
+			if blocked {
+				result.Blocked++
+				continue
+			}
+		}
+		result.Items = append(result.Items, input.ImageSearchItem{FileID: fileID})
 	}
-	return items, nil
+	return result, nil
+}
+
+func (p *Processor) preprocessSourceImage(ctx context.Context, processor ocr.Processor, record entity.SourceNoteImages, fileID string, keywords []string, mode string) (bool, error) {
+	columns := dao.SourceNoteImages.Columns()
+	text := record.OcrText
+	if record.PreprocessStatus != "completed" {
+		_, data, err := p.app.Files.Read(ctx, fileID)
+		if err != nil {
+			return false, err
+		}
+		ocrCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+		text, err = processor.Recognize(ocrCtx, data)
+		if err != nil {
+			_, _ = dao.SourceNoteImages.Ctx(ctx).Where(columns.Id, record.Id).Data(do.SourceNoteImages{
+				PreprocessStatus: "failed", FilterDecision: "error", FilterReason: err.Error(),
+			}).Update()
+			return false, err
+		}
+	}
+	blocked := ocr.Matches(text, keywords, mode)
+	decision := "passed"
+	reason := ""
+	if blocked {
+		decision = "blocked"
+		reason = "命中 OCR 屏蔽关键字"
+	}
+	_, err := dao.SourceNoteImages.Ctx(ctx).Where(columns.Id, record.Id).Data(do.SourceNoteImages{
+		PreprocessStatus: "completed", OcrText: text, FilterDecision: decision, FilterReason: reason,
+	}).Update()
+	return blocked, err
+}
+
+func searchOCRKeywords(raw string) ([]string, error) {
+	var keywords []string
+	if strings.TrimSpace(raw) == "" {
+		return keywords, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &keywords); err != nil {
+		return nil, gerror.Wrap(err, "解析 OCR 屏蔽关键字失败")
+	}
+	return keywords, nil
 }
 
 func (p *Processor) downloadSourceImage(ctx context.Context, sourceID, raw string) ([]byte, error) {

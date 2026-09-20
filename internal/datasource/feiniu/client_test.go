@@ -81,3 +81,14 @@ func TestNoteAcceptsNumericAndStringSourceIDs(t *testing.T) {
 		})
 	}
 }
+
+func TestMediaDownloadURLPriority(t *testing.T) {
+	media := Media{ContentURL: "https://cdn.example/content.jpg", PreviewURL: "https://cdn.example/preview.jpg", PreviewURI: "/legacy"}
+	if got := media.DownloadURL(); got != media.ContentURL {
+		t.Fatalf("DownloadURL() = %q, want content URL", got)
+	}
+	media.ContentURL = ""
+	if got := media.DownloadURL(); got != media.PreviewURL {
+		t.Fatalf("DownloadURL() = %q, want preview URL", got)
+	}
+}

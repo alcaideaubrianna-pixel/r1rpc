@@ -86,10 +86,23 @@ type Media struct {
 	AssetID    int64  `json:"asset_id"`
 	AssetType  string `json:"asset_type"`
 	PreviewURI string `json:"preview_uri"`
+	PreviewURL string `json:"preview_url"`
+	ContentURL string `json:"content_url"`
+	COSPath    string `json:"cos_path"`
 	BinaryMD5  string `json:"binary_md5"`
 	PHash      string `json:"phash"`
 	Sort       int    `json:"sort"`
 }
+
+func (m Media) DownloadURL() string {
+	for _, value := range []string{m.ContentURL, m.PreviewURL, m.PreviewURI} {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 type Note struct {
 	ID              int64          `json:"note_id"`
 	NoteCode        string         `json:"note_code"`
@@ -151,6 +164,7 @@ func (c *Client) request(ctx context.Context, path string, query url.Values, out
 	}
 	var envelope struct {
 		Code int             `json:"code"`
+		Msg  string          `json:"msg"`
 		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
@@ -162,7 +176,12 @@ func (c *Client) request(ctx context.Context, path string, query url.Values, out
 		return fmt.Errorf("FeiNiu OpenAPI 响应解析失败: %w", err)
 	}
 	if envelope.Code != 0 {
-		return fmt.Errorf("FeiNiu OpenAPI code=%d", envelope.Code)
+		message := strings.TrimSpace(envelope.Msg)
+		if message == "" {
+			message = responsePreview(data)
+		}
+		g.Log().Errorf(ctx, "FeiNiu OpenAPI 业务错误 method=%s url=%s code=%d msg=%q", http.MethodGet, u.String(), envelope.Code, message)
+		return fmt.Errorf("FeiNiu OpenAPI code=%d: %s", envelope.Code, message)
 	}
 	return json.Unmarshal(envelope.Data, out)
 }
