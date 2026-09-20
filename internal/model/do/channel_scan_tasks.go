@@ -19,6 +19,7 @@ type ChannelScanTasks struct {
 	InitialLimit         any //
 	PollIntervalMinutes  any //
 	Priority             any //
+	SearchConfigId       any //
 	Status               any //
 	CursorValue          any //
 	Watermark            any //
@@ -28,4 +29,5 @@ type ChannelScanTasks struct {
 	ImageSearchRequestId any //
 	CreatedAt            any //
 	UpdatedAt            any //
+	SearchTaskId         any //
 }

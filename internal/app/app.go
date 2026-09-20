@@ -24,6 +24,7 @@ import (
 	"r1rpc/internal/service/datasource"
 	"r1rpc/internal/service/imagesearch"
 	"r1rpc/internal/service/imagetask"
+	"r1rpc/internal/service/searchtask"
 	"r1rpc/internal/service/storagesetting"
 	"r1rpc/internal/service/xhsprofile"
 	storagecontract "r1rpc/internal/storage"
@@ -104,6 +105,7 @@ type App struct {
 	Files           *localfiles.Service
 	ImageTasks      *imagetask.Service
 	ImageSearch     *imagesearch.Service
+	SearchTasks     *searchtask.Service
 	StorageSettings *storagesetting.Service
 	XHSProfiles     *xhsprofile.Service
 	DataSources     *datasource.Service
@@ -185,6 +187,7 @@ func New(cfg config.Config, st *store.Store) *App {
 		Files:             fileService,
 		ImageTasks:        imagetask.New(st),
 		ImageSearch:       imagesearch.New(fileService),
+		SearchTasks:       searchtask.New(),
 		StorageSettings:   storagesetting.New(cfg.JWTSecret),
 		XHSProfiles:       xhsprofile.New(fileService),
 		DataSources:       datasource.New(cfg.JWTSecret),

@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS channel_scan_tasks (
     initial_limit INT NOT NULL DEFAULT 10,
     poll_interval_minutes INT NOT NULL DEFAULT 10,
     priority INT NOT NULL DEFAULT 0,
+    search_config_id CHAR(32) NOT NULL DEFAULT '',
     status VARCHAR(16) NOT NULL DEFAULT 'created',
     cursor_value VARCHAR(512) NOT NULL DEFAULT '',
     watermark DATETIME NULL,
@@ -87,6 +88,7 @@ CREATE TABLE IF NOT EXISTS channel_scan_tasks (
     last_success_at DATETIME NULL,
     last_error VARCHAR(1024) NOT NULL DEFAULT '',
     image_search_request_id CHAR(32) NOT NULL DEFAULT '',
+    search_task_id CHAR(32) NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_channel_scan_tasks_due (status, next_run_at),
@@ -171,6 +173,66 @@ CREATE TABLE IF NOT EXISTS ocr_filter_rules (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_ocr_filter_rules_name (name),
     INDEX idx_ocr_filter_rules_enabled (enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS search_configs (
+    id CHAR(32) PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    ocr_enabled TINYINT(1) NOT NULL DEFAULT 0,
+    ocr_keywords_json LONGTEXT NULL,
+    ocr_match_mode VARCHAR(24) NOT NULL DEFAULT 'contains_any',
+    score_threshold DECIMAL(6,5) NOT NULL DEFAULT 0.82000,
+    max_phash_distance INT NOT NULL DEFAULT 12,
+    max_dhash_distance INT NOT NULL DEFAULT 16,
+    max_ahash_distance INT NOT NULL DEFAULT 16,
+    max_candidates INT NOT NULL DEFAULT 20,
+    pipeline_name VARCHAR(64) NOT NULL DEFAULT 'hash-v1',
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    version INT NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_search_configs_name (name),
+    INDEX idx_search_configs_enabled (enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS search_tasks (
+    id CHAR(32) PRIMARY KEY,
+    source_type VARCHAR(32) NOT NULL,
+    source_task_id CHAR(32) NOT NULL DEFAULT '',
+    title VARCHAR(512) NOT NULL DEFAULT '',
+    config_id CHAR(32) NOT NULL DEFAULT '',
+    config_snapshot_json LONGTEXT NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'created',
+    total_count INT NOT NULL DEFAULT 0,
+    filtered_count INT NOT NULL DEFAULT 0,
+    search_count INT NOT NULL DEFAULT 0,
+    matched_count INT NOT NULL DEFAULT 0,
+    failed_count INT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_search_tasks_source (source_type, source_task_id),
+    INDEX idx_search_tasks_status_created (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS search_task_items (
+    id CHAR(32) PRIMARY KEY,
+    search_task_id CHAR(32) NOT NULL,
+    source_note_id CHAR(32) NOT NULL,
+    external_id VARCHAR(128) NOT NULL DEFAULT '',
+    title VARCHAR(512) NOT NULL DEFAULT '',
+    status VARCHAR(24) NOT NULL DEFAULT 'created',
+    preprocess_status VARCHAR(24) NOT NULL DEFAULT 'pending',
+    filter_status VARCHAR(24) NOT NULL DEFAULT 'pending',
+    filter_reason VARCHAR(1024) NOT NULL DEFAULT '',
+    image_search_request_id CHAR(32) NOT NULL DEFAULT '',
+    matched TINYINT(1) NOT NULL DEFAULT 0,
+    best_score DECIMAL(8,6) NULL,
+    error_message VARCHAR(1024) NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_search_task_items_note (search_task_id, source_note_id),
+    INDEX idx_search_task_items_status (search_task_id, status),
+    INDEX idx_search_task_items_request (image_search_request_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS files (

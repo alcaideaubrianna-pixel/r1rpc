@@ -69,6 +69,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerStorageSettingsRoutes(mux)
 	s.registerXHSProfileRoutes(mux)
 	s.registerDataSourceRoutes(mux)
+	s.registerSearchTaskRoutes(mux)
 	mux.HandleFunc("POST /api/v1/image-recognition/jobs", s.requireRole("admin", s.handleCreateImageJob))
 	mux.HandleFunc("POST /api/v1/image-recognition/batches", s.requireRole("admin", s.handleCreateImageBatch))
 	mux.HandleFunc("GET /api/v1/image-recognition/batches", s.requireRole("admin", s.handleListImageBatches))

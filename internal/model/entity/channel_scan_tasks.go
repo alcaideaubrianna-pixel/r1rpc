@@ -18,6 +18,7 @@ type ChannelScanTasks struct {
 	InitialLimit         int       `json:"initialLimit"         orm:"initial_limit"           ` //
 	PollIntervalMinutes  int       `json:"pollIntervalMinutes"  orm:"poll_interval_minutes"   ` //
 	Priority             int       `json:"priority"             orm:"priority"                ` //
+	SearchConfigId       string    `json:"searchConfigId"       orm:"search_config_id"        ` //
 	Status               string    `json:"status"               orm:"status"                  ` //
 	CursorValue          string    `json:"cursorValue"          orm:"cursor_value"            ` //
 	Watermark            time.Time `json:"watermark"            orm:"watermark"               ` //
@@ -27,4 +28,5 @@ type ChannelScanTasks struct {
 	ImageSearchRequestId string    `json:"imageSearchRequestId" orm:"image_search_request_id" ` //
 	CreatedAt            time.Time `json:"createdAt"            orm:"created_at"              ` //
 	UpdatedAt            time.Time `json:"updatedAt"            orm:"updated_at"              ` //
+	SearchTaskId         string    `json:"searchTaskId"         orm:"search_task_id"          ` //
 }

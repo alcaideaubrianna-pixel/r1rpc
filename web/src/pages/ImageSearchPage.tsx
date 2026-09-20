@@ -1,132 +1,40 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { Badge, Button, Card, Flex, Heading, Table, Text, TextField } from '@radix-ui/themes'
-import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, ReloadIcon, RocketIcon, TrashIcon } from '@radix-ui/react-icons'
-import { get, post, upload } from '../api/client'
+import { Link } from 'react-router-dom'
+import { Badge, Button, Card, Dialog, Flex, Heading, Select, Switch, Table, Tabs, Text, TextArea, TextField } from '@radix-ui/themes'
+import { PlusIcon, ReloadIcon } from '@radix-ui/react-icons'
+import { get, post, put } from '../api/client'
 import { useFetch } from '../lib/useFetch'
 import { notify } from '../lib/toast'
 import { fmtTime } from '../lib/format'
-import { randomUUID } from '../lib/id'
-import type { StoredFile } from '../types'
-import type { SearchRequestPage, SearchRequestSummary } from '../features/image-search/types'
 import { statusColor, statusLabel } from '../features/image-search/status'
 
-interface DraftGroup {
-  id: string
-  subjectUserId: string
-  files: File[]
+interface Task { id:string; title:string; sourceType:string; status:string; totalCount:number; filteredCount:number; matchedCount:number; failedCount:number; createdAt:string }
+interface TaskPage { items:Task[]; total:number; totalPages:number }
+interface Config { id:string; name:string; ocrEnabled:number; ocrKeywords:string[]; ocrMatchMode:string; scoreThreshold:number; maxPhashDistance:number; maxDhashDistance:number; maxAhashDistance:number; maxCandidates:number; pipelineName:string; enabled:number }
+interface Form { id?:string; name:string; ocrEnabled:boolean; keywords:string; ocrMatchMode:string; scoreThreshold:number; maxPhashDistance:number; maxDhashDistance:number; maxAhashDistance:number; maxCandidates:number; pipelineName:string; enabled:boolean }
+const empty:Form={name:'默认搜索配置',ocrEnabled:false,keywords:'',ocrMatchMode:'contains_any',scoreThreshold:.82,maxPhashDistance:12,maxDhashDistance:16,maxAhashDistance:16,maxCandidates:20,pipelineName:'hash-v1',enabled:true}
+
+export default function ImageSearchPage(){
+ const[page,setPage]=useState(1),[open,setOpen]=useState(false),[form,setForm]=useState<Form>(empty)
+ const tasks=useFetch(()=>get<TaskPage>(`/api/v1/search-tasks?page=${page}&pageSize=10`),[page])
+ const configs=useFetch(()=>get<{items:Config[]}>('/api/v1/search-configs'))
+ useEffect(()=>{const timer=window.setInterval(tasks.reload,5000);return()=>window.clearInterval(timer)},[page])
+ async function save(){const body={...form,ocrKeywords:form.keywords.split('\n').map(v=>v.trim()).filter(Boolean)};try{form.id?await put(`/api/v1/search-configs/${form.id}`,body):await post('/api/v1/search-configs',body);notify.success('搜索配置已保存');setOpen(false);configs.reload()}catch(e){notify.error(e,'保存搜索配置失败')}}
+ return <Flex direction="column" gap="4"><Flex justify="between"><div><Heading size="5">图片搜索</Heading><Text size="2" color="gray">业务任务按资料拆分为独立搜索结果。</Text></div><Button variant="soft" onClick={()=>{tasks.reload();configs.reload()}}><ReloadIcon/>刷新</Button></Flex><Tabs.Root defaultValue="tasks"><Tabs.List><Tabs.Trigger value="tasks">搜索任务</Tabs.Trigger><Tabs.Trigger value="configs">搜索配置</Tabs.Trigger></Tabs.List><Tabs.Content value="tasks"><Card><Table.Root><Table.Header><Table.Row><Table.ColumnHeaderCell>任务</Table.ColumnHeaderCell><Table.ColumnHeaderCell>来源</Table.ColumnHeaderCell><Table.ColumnHeaderCell>状态</Table.ColumnHeaderCell><Table.ColumnHeaderCell>资料</Table.ColumnHeaderCell><Table.ColumnHeaderCell>匹配</Table.ColumnHeaderCell><Table.ColumnHeaderCell>过滤 / 失败</Table.ColumnHeaderCell><Table.ColumnHeaderCell>创建时间</Table.ColumnHeaderCell><Table.ColumnHeaderCell/></Table.Row></Table.Header><Table.Body>{(tasks.data?.items??[]).map(t=><Table.Row key={t.id}><Table.RowHeaderCell>{t.title||t.id}</Table.RowHeaderCell><Table.Cell>{t.sourceType}</Table.Cell><Table.Cell><Badge color={statusColor(t.status)}>{statusLabel(t.status)}</Badge></Table.Cell><Table.Cell>{t.totalCount}</Table.Cell><Table.Cell>{t.matchedCount}</Table.Cell><Table.Cell>{t.filteredCount} / {t.failedCount}</Table.Cell><Table.Cell>{fmtTime(t.createdAt)}</Table.Cell><Table.Cell><Button asChild size="1" variant="soft"><Link to={`/image-search/${t.id}`}>查看资料</Link></Button></Table.Cell></Table.Row>)}</Table.Body></Table.Root><Pager page={page} total={tasks.data?.totalPages??0} setPage={setPage}/></Card></Tabs.Content><Tabs.Content value="configs"><Card><Flex justify="between" mb="3"><Heading size="3">搜索配置</Heading><Button onClick={()=>{setForm(empty);setOpen(true)}}><PlusIcon/>新增配置</Button></Flex><Table.Root><Table.Header><Table.Row><Table.ColumnHeaderCell>名称</Table.ColumnHeaderCell><Table.ColumnHeaderCell>OCR</Table.ColumnHeaderCell><Table.ColumnHeaderCell>屏蔽词</Table.ColumnHeaderCell><Table.ColumnHeaderCell>分数</Table.ColumnHeaderCell><Table.ColumnHeaderCell>pHash</Table.ColumnHeaderCell><Table.ColumnHeaderCell/></Table.Row></Table.Header><Table.Body>{(configs.data?.items??[]).map(c=><Table.Row key={c.id}><Table.RowHeaderCell>{c.name}</Table.RowHeaderCell><Table.Cell>{c.ocrEnabled?'启用':'关闭'}</Table.Cell><Table.Cell>{c.ocrKeywords.length}</Table.Cell><Table.Cell>{c.scoreThreshold}</Table.Cell><Table.Cell>{c.maxPhashDistance}</Table.Cell><Table.Cell><Button size="1" variant="soft" onClick={()=>{setForm({id:c.id,name:c.name,ocrEnabled:!!c.ocrEnabled,keywords:c.ocrKeywords.join('\n'),ocrMatchMode:c.ocrMatchMode,scoreThreshold:c.scoreThreshold,maxPhashDistance:c.maxPhashDistance,maxDhashDistance:c.maxDhashDistance,maxAhashDistance:c.maxAhashDistance,maxCandidates:c.maxCandidates,pipelineName:c.pipelineName,enabled:!!c.enabled});setOpen(true)}}>编辑</Button></Table.Cell></Table.Row>)}</Table.Body></Table.Root></Card></Tabs.Content></Tabs.Root><ConfigDialog open={open} form={form} setOpen={setOpen} setForm={setForm} save={save}/></Flex>
 }
-
-const newGroup = (): DraftGroup => ({ id: randomUUID(), subjectUserId: '', files: [] })
-
-export default function ImageSearchPage() {
-  const navigate = useNavigate()
-  const [page, setPage] = useState(1)
-  const requests = useFetch(() => get<SearchRequestPage>(`/api/v1/image-search/requests?page=${page}&pageSize=10`), [page])
-  const [groups, setGroups] = useState<DraftGroup[]>([newGroup()])
-  const [threshold, setThreshold] = useState('0.82')
-  const [maxDistance, setMaxDistance] = useState('12')
-  const [creating, setCreating] = useState(false)
-  const [progress, setProgress] = useState('')
-
-  useEffect(() => {
-    const timer = window.setInterval(requests.reload, 5000)
-    return () => window.clearInterval(timer)
-  }, [])
-
-  function updateGroup(id: string, patch: Partial<DraftGroup>) {
-    setGroups((current) => current.map((group) => group.id === id ? { ...group, ...patch } : group))
-  }
-
-  async function createRequest() {
-    if (groups.length === 0 || groups.some((group) => group.files.length === 0)) {
-      notify.error('每个任务组至少选择一张图片')
-      return
-    }
-    const scoreThreshold = Number(threshold)
-    const maxPHashDistance = Number(maxDistance)
-    if (!(scoreThreshold > 0 && scoreThreshold <= 1) || !(maxPHashDistance >= 1 && maxPHashDistance <= 64)) {
-      notify.error('请检查相似度阈值和 pHash 距离')
-      return
-    }
-    setCreating(true)
-    try {
-      const payloadGroups = []
-      let uploaded = 0
-      const total = groups.reduce((sum, group) => sum + group.files.length, 0)
-      for (const group of groups) {
-        const images = []
-        for (const file of group.files) {
-          setProgress(`上传图片 ${uploaded + 1}/${total}`)
-          const body = new FormData()
-          body.append('file', file)
-          const stored = await upload<StoredFile>('/api/files', body)
-          images.push({ fileId: stored.id })
-          uploaded += 1
-        }
-        payloadGroups.push({
-          externalId: group.id,
-          subjectUserId: group.subjectUserId.trim(),
-          images,
-          matchPolicy: { scoreThreshold, maxPHashDistance },
-        })
-      }
-      setProgress('创建并调度任务')
-      const created = await post<{ request: SearchRequestSummary }>('/api/v1/image-search/requests', {
-        externalId: randomUUID(),
-        groups: payloadGroups,
-      })
-      notify.success('图片搜索任务组已创建')
-      navigate(`/image-search/${created.request.id}`)
-    } catch (error) {
-      notify.error(error, '创建图片搜索任务失败')
-    } finally {
-      setCreating(false)
-      setProgress('')
-    }
-  }
-
-  return (
-    <Flex direction="column" gap="4" className="image-search-page">
-      <Card size="3" className="search-create-card">
-        <Flex justify="between" align="start" gap="5" wrap="wrap">
-          <div>
-            <Text size="1" weight="bold" color="blue">VISUAL SEARCH LAB</Text>
-            <Heading size="5" mt="1">创建图片搜索任务组</Heading>
-            <Text size="2" color="gray">每组任意一张图片匹配成功，该组即完成。</Text>
-          </div>
-          <Flex gap="3" align="end" wrap="wrap">
-            <label><Text as="div" size="1" color="gray" mb="1">最低综合分数</Text><TextField.Root value={threshold} onChange={(e) => setThreshold(e.target.value)} style={{ width: 130 }} /></label>
-            <label><Text as="div" size="1" color="gray" mb="1">最大 pHash 距离</Text><TextField.Root value={maxDistance} onChange={(e) => setMaxDistance(e.target.value)} style={{ width: 130 }} /></label>
-          </Flex>
-        </Flex>
-
-        <Flex direction="column" gap="3" mt="5">
-          {groups.map((group, index) => <Card key={group.id} variant="surface" className="search-group-draft">
-            <Flex justify="between" align="center" gap="3" wrap="wrap">
-              <Flex align="center" gap="3"><span className="group-index">{String(index + 1).padStart(2, '0')}</span><div><Text weight="bold">图片组</Text><Text as="div" size="1" color="gray">{group.files.length} 张图片</Text></div></Flex>
-              <Flex gap="2" align="center" wrap="wrap">
-                <TextField.Root placeholder="关联用户 ID（可选）" value={group.subjectUserId} onChange={(e) => updateGroup(group.id, { subjectUserId: e.target.value })} style={{ width: 220 }} />
-                <input type="file" multiple accept="image/jpeg,image/png,image/webp" disabled={creating} onChange={(e) => updateGroup(group.id, { files: Array.from(e.target.files ?? []).slice(0, 100) })} />
-                {groups.length > 1 && <Button size="1" variant="ghost" color="red" onClick={() => setGroups((current) => current.filter((item) => item.id !== group.id))}><TrashIcon /></Button>}
-              </Flex>
-            </Flex>
-            {group.files.length > 0 && <Flex gap="2" mt="3" wrap="wrap">{group.files.slice(0, 8).map((file) => <Badge key={`${file.name}-${file.size}`} variant="soft" color="gray">{file.name}</Badge>)}{group.files.length > 8 && <Badge>+{group.files.length - 8}</Badge>}</Flex>}
-          </Card>)}
-          <Flex justify="between" align="center" wrap="wrap" gap="3">
-            <Button variant="soft" onClick={() => setGroups((current) => [...current, newGroup()])}><PlusIcon /> 增加图片组</Button>
-            <Flex align="center" gap="3">{progress && <Text size="2" color="gray">{progress}</Text>}<Button size="3" loading={creating} onClick={createRequest}><RocketIcon /> 上传并开始搜索</Button></Flex>
-          </Flex>
-        </Flex>
-      </Card>
-
-      <Card size="3">
-        <Flex justify="between" align="center" mb="3"><div><Heading size="3">搜索任务</Heading><Text size="1" color="gray">自动每 5 秒刷新</Text></div><Button variant="soft" color="gray" onClick={requests.reload}><ReloadIcon /> 刷新</Button></Flex>
-        <Table.Root variant="surface"><Table.Header><Table.Row><Table.ColumnHeaderCell>任务</Table.ColumnHeaderCell><Table.ColumnHeaderCell>状态</Table.ColumnHeaderCell><Table.ColumnHeaderCell>图片组</Table.ColumnHeaderCell><Table.ColumnHeaderCell>结果</Table.ColumnHeaderCell><Table.ColumnHeaderCell>创建时间</Table.ColumnHeaderCell><Table.ColumnHeaderCell /></Table.Row></Table.Header>
-          <Table.Body>{(requests.data?.items ?? []).map((item) => <Table.Row key={item.id} align="center"><Table.RowHeaderCell><Text size="2" weight="medium">{item.externalId || item.id}</Text><Text as="div" size="1" color="gray">{item.id}</Text></Table.RowHeaderCell><Table.Cell><Badge color={statusColor(item.status)}>{statusLabel(item.status)}</Badge></Table.Cell><Table.Cell>{item.groupCount}</Table.Cell><Table.Cell><Flex gap="2"><Badge color="green" variant="soft">命中 {item.matchedCount}</Badge><Badge color="gray" variant="soft">未命中 {item.notMatchedCount}</Badge>{item.failedCount > 0 && <Badge color="red">失败 {item.failedCount}</Badge>}</Flex></Table.Cell><Table.Cell>{fmtTime(item.createdAt)}</Table.Cell><Table.Cell><Button asChild size="1" variant="soft"><Link to={`/image-search/${item.id}`}>查看结果</Link></Button></Table.Cell></Table.Row>)}</Table.Body>
-        </Table.Root>
-        {(requests.data?.total ?? 0) > 10 && <Flex align="center" justify="end" gap="3" mt="3"><Button variant="soft" color="gray" size="1" disabled={page <= 1} onClick={() => setPage((v) => v - 1)}><ChevronLeftIcon /> 上一页</Button><Text size="2" color="gray">第 {page} / {Math.ceil((requests.data?.total ?? 0) / 10)} 页</Text><Button variant="soft" color="gray" size="1" disabled={page >= Math.ceil((requests.data?.total ?? 0) / 10)} onClick={() => setPage((v) => v + 1)}>下一页 <ChevronRightIcon /></Button></Flex>}
-      </Card>
-    </Flex>
-  )
+function Pager({page,total,setPage}:{page:number;total:number;setPage:(v:number)=>void}){return total>1?<Flex justify="end" gap="3" mt="3"><Button size="1" disabled={page<=1} onClick={()=>setPage(page-1)}>上一页</Button><Text>第 {page} / {total} 页</Text><Button size="1" disabled={page>=total} onClick={()=>setPage(page+1)}>下一页</Button></Flex>:null}
+function ConfigDialog({open,form,setOpen,setForm,save}:{open:boolean;form:Form;setOpen:(v:boolean)=>void;setForm:(v:Form)=>void;save:()=>void}){
+ return <Dialog.Root open={open} onOpenChange={setOpen}><Dialog.Content maxWidth="680px"><Dialog.Title>搜索配置</Dialog.Title><Flex direction="column" gap="3" mt="4">
+  <label>名称<TextField.Root value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>
+  <Flex gap="2"><Switch checked={form.enabled} onCheckedChange={v=>setForm({...form,enabled:v})}/><Text>启用配置</Text></Flex>
+  <Flex gap="2"><Switch checked={form.ocrEnabled} onCheckedChange={v=>setForm({...form,ocrEnabled:v})}/><Text>启用 OCR 关键字屏蔽</Text></Flex>
+  {form.ocrEnabled&&<><Select.Root value={form.ocrMatchMode} onValueChange={v=>setForm({...form,ocrMatchMode:v})}><Select.Trigger/><Select.Content><Select.Item value="contains_any">命中任一关键字</Select.Item><Select.Item value="contains_all">命中全部关键字</Select.Item></Select.Content></Select.Root><TextArea placeholder="每行一个屏蔽关键字" value={form.keywords} onChange={e=>setForm({...form,keywords:e.target.value})} rows={6}/></>}
+  <Flex gap="3" wrap="wrap">
+   <label>最低分数<TextField.Root type="number" min="0.01" max="1" step="0.01" value={String(form.scoreThreshold)} onChange={e=>setForm({...form,scoreThreshold:Number(e.target.value)})}/></label>
+   <label>最大 pHash<TextField.Root type="number" min="1" max="64" value={String(form.maxPhashDistance)} onChange={e=>setForm({...form,maxPhashDistance:Number(e.target.value)})}/></label>
+   <label>最大 dHash<TextField.Root type="number" min="1" max="64" value={String(form.maxDhashDistance)} onChange={e=>setForm({...form,maxDhashDistance:Number(e.target.value)})}/></label>
+   <label>最大 aHash<TextField.Root type="number" min="1" max="64" value={String(form.maxAhashDistance)} onChange={e=>setForm({...form,maxAhashDistance:Number(e.target.value)})}/></label>
+   <label>候选数<TextField.Root type="number" min="1" max="100" value={String(form.maxCandidates)} onChange={e=>setForm({...form,maxCandidates:Number(e.target.value)})}/></label>
+  </Flex>
+ </Flex><Flex justify="end" gap="2" mt="5"><Dialog.Close><Button variant="soft">取消</Button></Dialog.Close><Button onClick={save}>保存</Button></Flex></Dialog.Content></Dialog.Root>
 }

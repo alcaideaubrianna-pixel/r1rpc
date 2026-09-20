@@ -29,6 +29,7 @@ type ChannelScanTasksColumns struct {
 	InitialLimit         string //
 	PollIntervalMinutes  string //
 	Priority             string //
+	SearchConfigId       string //
 	Status               string //
 	CursorValue          string //
 	Watermark            string //
@@ -38,6 +39,7 @@ type ChannelScanTasksColumns struct {
 	ImageSearchRequestId string //
 	CreatedAt            string //
 	UpdatedAt            string //
+	SearchTaskId         string //
 }
 
 // channelScanTasksColumns holds the columns for the table channel_scan_tasks.
@@ -50,6 +52,7 @@ var channelScanTasksColumns = ChannelScanTasksColumns{
 	InitialLimit:         "initial_limit",
 	PollIntervalMinutes:  "poll_interval_minutes",
 	Priority:             "priority",
+	SearchConfigId:       "search_config_id",
 	Status:               "status",
 	CursorValue:          "cursor_value",
 	Watermark:            "watermark",
@@ -59,6 +62,7 @@ var channelScanTasksColumns = ChannelScanTasksColumns{
 	ImageSearchRequestId: "image_search_request_id",
 	CreatedAt:            "created_at",
 	UpdatedAt:            "updated_at",
+	SearchTaskId:         "search_task_id",
 }
 
 // NewChannelScanTasksDao creates and returns a new DAO object for table data access.

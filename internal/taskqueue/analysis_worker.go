@@ -140,7 +140,15 @@ func (p *Processor) persistCandidates(ctx context.Context, job entity.ImageJobs,
 		return "", nil, gerror.Wrap(err, "读取图片搜索响应失败")
 	}
 	responseID = value.String()
-	for rank, raw := range response.Items {
+	policy, err := loadMatchPolicy(ctx, item.GroupId)
+	if err != nil {
+		return "", nil, err
+	}
+	items := response.Items
+	if len(items) > policy.MaxCandidates {
+		items = items[:policy.MaxCandidates]
+	}
+	for rank, raw := range items {
 		var candidate normalizedCandidate
 		if err := json.Unmarshal(raw, &candidate); err != nil || strings.TrimSpace(candidate.ID) == "" {
 			continue
@@ -177,7 +185,7 @@ func (p *Processor) persistCandidates(ctx context.Context, job entity.ImageJobs,
 			}
 		}
 	}
-	return responseID, response.Items, nil
+	return responseID, items, nil
 }
 
 func (p *Processor) sourceHashes(ctx context.Context, asset entity.ImageAssets) (imaging.Hashes, error) {

@@ -73,6 +73,7 @@ type ScanTaskInput struct {
 	InitialLimit        int    `json:"initialLimit"`
 	PollIntervalMinutes int    `json:"pollIntervalMinutes"`
 	Priority            int    `json:"priority"`
+	SearchConfigID      string `json:"searchConfigId"`
 }
 
 func (s *Service) SetEnqueuer(value Enqueuer) { s.enqueuer = value }
@@ -90,7 +91,7 @@ func (s *Service) CreateScanTask(ctx context.Context, in ScanTaskInput) (*entity
 		in.PollIntervalMinutes = 10
 	}
 	id := guid.S()
-	_, err := dao.ChannelScanTasks.Ctx(ctx).Data(do.ChannelScanTasks{Id: id, DataSourceId: in.DataSourceID, ChannelId: in.ChannelID, ChannelTitle: in.ChannelTitle, Mode: in.Mode, InitialLimit: in.InitialLimit, PollIntervalMinutes: in.PollIntervalMinutes, Priority: in.Priority, Status: "queued", NextRunAt: time.Now()}).Insert()
+	_, err := dao.ChannelScanTasks.Ctx(ctx).Data(do.ChannelScanTasks{Id: id, DataSourceId: in.DataSourceID, ChannelId: in.ChannelID, ChannelTitle: in.ChannelTitle, Mode: in.Mode, InitialLimit: in.InitialLimit, PollIntervalMinutes: in.PollIntervalMinutes, Priority: in.Priority, SearchConfigId: in.SearchConfigID, Status: "queued", NextRunAt: time.Now()}).Insert()
 	if err != nil {
 		return nil, err
 	}

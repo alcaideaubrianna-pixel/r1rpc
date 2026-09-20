@@ -146,7 +146,9 @@ func (r *Runtime) recoverSourceScans(ctx context.Context) error {
 	}
 	var legacy []entity.ChannelScanTasks
 	if err := dao.ChannelScanTasks.Ctx(ctx).
-		Where(columns.Status, "completed").Where(columns.ImageSearchRequestId, "").
+		Where(columns.Status, "completed").
+		Where(columns.ImageSearchRequestId, "").
+		Where(columns.SearchTaskId, "").
 		OrderAsc(columns.UpdatedAt).Limit(100).Scan(&legacy); err != nil {
 		return err
 	}

@@ -2,10 +2,10 @@ package taskqueue
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"r1rpc/internal/dao"
@@ -35,12 +35,111 @@ func (p *Processor) prepareSourceSearch(ctx context.Context, taskID string) erro
 	if scan.Status == "cancelled" || scan.Status == "paused" {
 		return nil
 	}
-	groups, err := p.buildSourceGroups(ctx, scan)
+	config, snapshot, err := loadSearchConfig(ctx, scan.SearchConfigId)
 	if err != nil {
 		return p.markSourcePrepareError(ctx, scan.Id, err)
 	}
-	if len(groups) == 0 {
-		return p.markSourcePrepareError(ctx, scan.Id, gerror.New("扫描结果没有可用图片"))
+	searchTaskID := sourceSearchTaskID(scan)
+	_, err = dao.SearchTasks.Ctx(ctx).Data(do.SearchTasks{Id: searchTaskID, SourceType: "channel_scan", SourceTaskId: searchTaskID, Title: scan.ChannelTitle, ConfigId: config.Id, ConfigSnapshotJson: snapshot, Status: "preparing"}).InsertIgnore()
+	if err != nil {
+		return p.markSourcePrepareError(ctx, scan.Id, err)
+	}
+	relations, err := loadScanRelations(ctx, scan.Id)
+	if err != nil {
+		return p.markSourcePrepareError(ctx, scan.Id, err)
+	}
+	created := 0
+	for _, relation := range relations {
+		if err = p.createSourceSearchItem(ctx, scan, config, searchTaskID, relation.NoteId); err != nil {
+			return p.markSourcePrepareError(ctx, scan.Id, err)
+		}
+		created++
+	}
+	if created == 0 {
+		return p.markSourcePrepareError(ctx, scan.Id, gerror.New("扫描结果没有资料"))
+	}
+	_, _ = dao.SearchTasks.Ctx(ctx).Where(dao.SearchTasks.Columns().Id, searchTaskID).Data(do.SearchTasks{Status: "running", TotalCount: created, SearchCount: created}).Update()
+	status := "completed"
+	if scan.Mode == "continuous" {
+		status = "waiting"
+	}
+	_, err = dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, scan.Id).
+		Data(do.ChannelScanTasks{Status: status, SearchTaskId: searchTaskID, LastError: ""}).Update()
+	return err
+}
+
+func loadScanRelations(ctx context.Context, scanID string) ([]entity.SourceScanTaskNotes, error) {
+	relationColumns := dao.SourceScanTaskNotes.Columns()
+	var relations []entity.SourceScanTaskNotes
+	if err := dao.SourceScanTaskNotes.Ctx(ctx).Where(relationColumns.ScanTaskId, scanID).Scan(&relations); err != nil {
+		return nil, err
+	}
+	if len(relations) == 0 {
+		var legacyNotes []entity.SourceNotes
+		if err := dao.SourceNotes.Ctx(ctx).Where(dao.SourceNotes.Columns().ScanTaskId, scanID).Scan(&legacyNotes); err != nil {
+			return nil, err
+		}
+		for _, note := range legacyNotes {
+			relations = append(relations, entity.SourceScanTaskNotes{ScanTaskId: scanID, NoteId: note.Id})
+			_, _ = dao.SourceScanTaskNotes.Ctx(ctx).Data(do.SourceScanTaskNotes{Id: guid.S(), ScanTaskId: scanID, NoteId: note.Id}).InsertIgnore()
+		}
+	}
+	return relations, nil
+}
+
+func loadSearchConfig(ctx context.Context, id string) (entity.SearchConfigs, string, error) {
+	var config entity.SearchConfigs
+	model := dao.SearchConfigs.Ctx(ctx).Where(dao.SearchConfigs.Columns().Enabled, 1)
+	if id != "" {
+		model = model.Where(dao.SearchConfigs.Columns().Id, id)
+	}
+	if err := model.OrderDesc(dao.SearchConfigs.Columns().UpdatedAt).Limit(1).Scan(&config); err != nil {
+		return config, "", err
+	}
+	if config.Id == "" {
+		if id != "" {
+			return config, "", gerror.New("指定的搜索配置不存在或已停用")
+		}
+		config = entity.SearchConfigs{Id: "", Name: "默认配置", ScoreThreshold: 0.82, MaxPhashDistance: 12, MaxDhashDistance: 16, MaxAhashDistance: 16, MaxCandidates: 20, PipelineName: "hash-v1", Enabled: 1, Version: 1}
+	}
+	raw, _ := json.Marshal(config)
+	return config, string(raw), nil
+}
+
+func (p *Processor) createSourceSearchItem(ctx context.Context, scan entity.ChannelScanTasks, config entity.SearchConfigs, searchTaskID, noteID string) error {
+	var note entity.SourceNotes
+	if err := dao.SourceNotes.Ctx(ctx).Where(dao.SourceNotes.Columns().Id, noteID).Scan(&note); err != nil {
+		return err
+	}
+	itemID := guid.S()
+	_, err := dao.SearchTaskItems.Ctx(ctx).Data(do.SearchTaskItems{Id: itemID, SearchTaskId: searchTaskID, SourceNoteId: note.Id, ExternalId: note.ExternalNoteId, Title: note.Title, Status: "preparing", PreprocessStatus: "running", FilterStatus: "pending"}).InsertIgnore()
+	if err != nil {
+		return err
+	}
+	var item entity.SearchTaskItems
+	itemColumns := dao.SearchTaskItems.Columns()
+	if err = dao.SearchTaskItems.Ctx(ctx).Where(itemColumns.SearchTaskId, searchTaskID).Where(itemColumns.SourceNoteId, note.Id).Scan(&item); err != nil {
+		return err
+	}
+	itemID = item.Id
+	if item.ImageSearchRequestId != "" {
+		return nil
+	}
+	images, err := p.prepareNoteImages(ctx, scan.DataSourceId, note.Id)
+	if err != nil {
+		_, _ = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "failed", ErrorMessage: err.Error()}).Update()
+		return nil
+	}
+	if len(images) == 0 {
+		_, _ = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "failed", ErrorMessage: "资料没有可用图片"}).Update()
+		return nil
+	}
+	if config.OcrEnabled == 1 {
+		message := "OCR 已启用，但 OCR 处理器尚未配置"
+		_, _ = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{
+			Status: "failed", PreprocessStatus: "pending", FilterStatus: "pending", ErrorMessage: message,
+		}).Update()
+		return nil
 	}
 	priority := scan.Priority
 	if priority < -10 {
@@ -50,52 +149,25 @@ func (p *Processor) prepareSourceSearch(ctx context.Context, taskID string) erro
 		priority = 10
 	}
 	request, err := p.app.ImageSearch.Create(ctx, input.CreateImageSearchRequest{
-		Source: "channel_scan", ExternalID: "channel-scan:" + scan.Id + ":" + strconv.FormatInt(scan.LastSuccessAt.UnixNano(), 10),
-		Priority: priority, RequestedBySubject: scan.ChannelTitle, Groups: groups,
+		Source: "channel_scan_item", ExternalID: "source-note:" + searchTaskID + ":" + note.Id,
+		Priority: priority, PipelineName: config.PipelineName, RequestedBySubject: note.Title,
+		Groups: []input.ImageSearchGroup{{
+			ExternalID: note.ExternalNoteId, Images: images,
+			MatchPolicy: map[string]any{"scoreThreshold": config.ScoreThreshold, "maxPHashDistance": config.MaxPhashDistance, "maxDHashDistance": config.MaxDhashDistance, "maxAHashDistance": config.MaxAhashDistance, "maxCandidates": config.MaxCandidates},
+		}},
 	})
 	if err != nil {
-		return p.markSourcePrepareError(ctx, scan.Id, err)
+		_, _ = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "failed", ErrorMessage: err.Error()}).Update()
+		return nil
 	}
-	status := "completed"
-	if scan.Mode == "continuous" {
-		status = "waiting"
-	}
-	_, err = dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, scan.Id).
-		Data(do.ChannelScanTasks{Status: status, ImageSearchRequestId: request.ID, LastError: ""}).Update()
+	_, err = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "running", PreprocessStatus: "completed", FilterStatus: "passed", ImageSearchRequestId: request.ID}).Update()
 	return err
 }
 
-func (p *Processor) buildSourceGroups(ctx context.Context, scan entity.ChannelScanTasks) ([]input.ImageSearchGroup, error) {
-	relationColumns := dao.SourceScanTaskNotes.Columns()
-	var relations []entity.SourceScanTaskNotes
-	if err := dao.SourceScanTaskNotes.Ctx(ctx).Where(relationColumns.ScanTaskId, scan.Id).Scan(&relations); err != nil {
-		return nil, err
-	}
-	if len(relations) == 0 {
-		var legacyNotes []entity.SourceNotes
-		if err := dao.SourceNotes.Ctx(ctx).Where(dao.SourceNotes.Columns().ScanTaskId, scan.Id).Scan(&legacyNotes); err != nil {
-			return nil, err
-		}
-		for _, note := range legacyNotes {
-			relations = append(relations, entity.SourceScanTaskNotes{ScanTaskId: scan.Id, NoteId: note.Id})
-			_, _ = dao.SourceScanTaskNotes.Ctx(ctx).Data(do.SourceScanTaskNotes{Id: guid.S(), ScanTaskId: scan.Id, NoteId: note.Id}).InsertIgnore()
-		}
-	}
-	groups := make([]input.ImageSearchGroup, 0, len(relations))
-	for _, relation := range relations {
-		var note entity.SourceNotes
-		if err := dao.SourceNotes.Ctx(ctx).Where(dao.SourceNotes.Columns().Id, relation.NoteId).Scan(&note); err != nil {
-			return nil, err
-		}
-		images, err := p.prepareNoteImages(ctx, scan.DataSourceId, note.Id)
-		if err != nil {
-			return nil, err
-		}
-		if len(images) > 0 {
-			groups = append(groups, input.ImageSearchGroup{ExternalID: note.ExternalNoteId, Images: images, MatchPolicy: map[string]any{}})
-		}
-	}
-	return groups, nil
+func sourceSearchTaskID(scan entity.ChannelScanTasks) string {
+	cycle := scan.LastSuccessAt.UTC().Format("20060102T150405.000000000")
+	sum := sha256.Sum256([]byte(scan.Id + ":" + cycle))
+	return fmt.Sprintf("%x", sum[:16])
 }
 
 func (p *Processor) prepareNoteImages(ctx context.Context, sourceID, noteID string) ([]input.ImageSearchItem, error) {

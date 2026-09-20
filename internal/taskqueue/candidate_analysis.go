@@ -30,6 +30,9 @@ type analysisStats struct {
 type matchPolicy struct {
 	ScoreThreshold   float64 `json:"scoreThreshold"`
 	MaxPHashDistance int     `json:"maxPHashDistance"`
+	MaxDHashDistance int     `json:"maxDHashDistance"`
+	MaxAHashDistance int     `json:"maxAHashDistance"`
+	MaxCandidates    int     `json:"maxCandidates"`
 }
 
 func (p *Processor) analyzeCandidates(
@@ -225,11 +228,14 @@ func insertCandidateMatch(ctx context.Context, itemID, candidateID string, compa
 }
 
 func isMatch(comparison imaging.Comparison, policy matchPolicy) bool {
-	return comparison.Score >= policy.ScoreThreshold && comparison.PHashDistance <= policy.MaxPHashDistance
+	return comparison.Score >= policy.ScoreThreshold &&
+		comparison.PHashDistance <= policy.MaxPHashDistance &&
+		comparison.DHashDistance <= policy.MaxDHashDistance &&
+		comparison.AHashDistance <= policy.MaxAHashDistance
 }
 
 func loadMatchPolicy(ctx context.Context, groupID string) (matchPolicy, error) {
-	policy := matchPolicy{ScoreThreshold: 0.82, MaxPHashDistance: 12}
+	policy := defaultMatchPolicy()
 	columns := dao.ImageSearchGroups.Columns()
 	value, err := dao.ImageSearchGroups.Ctx(ctx).Where(columns.Id, groupID).Value(columns.MatchPolicyJson)
 	if err != nil {
@@ -246,7 +252,20 @@ func loadMatchPolicy(ctx context.Context, groupID string) (matchPolicy, error) {
 	if policy.MaxPHashDistance <= 0 || policy.MaxPHashDistance > 64 {
 		policy.MaxPHashDistance = 12
 	}
+	if policy.MaxDHashDistance <= 0 || policy.MaxDHashDistance > 64 {
+		policy.MaxDHashDistance = 16
+	}
+	if policy.MaxAHashDistance <= 0 || policy.MaxAHashDistance > 64 {
+		policy.MaxAHashDistance = 16
+	}
+	if policy.MaxCandidates <= 0 || policy.MaxCandidates > 100 {
+		policy.MaxCandidates = 20
+	}
 	return policy, nil
+}
+
+func defaultMatchPolicy() matchPolicy {
+	return matchPolicy{ScoreThreshold: 0.82, MaxPHashDistance: 12, MaxDHashDistance: 16, MaxAHashDistance: 16, MaxCandidates: 20}
 }
 
 func findCandidate(ctx context.Context, jobID string, rank int) (entity.ImageCandidates, error) {
