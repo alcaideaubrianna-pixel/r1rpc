@@ -33,6 +33,7 @@ type SearchTasksColumns struct {
 	SearchCount        string //
 	MatchedCount       string //
 	FailedCount        string //
+	ErrorMessage       string //
 	CreatedAt          string //
 	UpdatedAt          string //
 }
@@ -51,6 +52,7 @@ var searchTasksColumns = SearchTasksColumns{
 	SearchCount:        "search_count",
 	MatchedCount:       "matched_count",
 	FailedCount:        "failed_count",
+	ErrorMessage:       "error_message",
 	CreatedAt:          "created_at",
 	UpdatedAt:          "updated_at",
 }

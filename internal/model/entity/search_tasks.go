@@ -22,6 +22,7 @@ type SearchTasks struct {
 	SearchCount        int       `json:"searchCount"        orm:"search_count"         ` //
 	MatchedCount       int       `json:"matchedCount"       orm:"matched_count"        ` //
 	FailedCount        int       `json:"failedCount"        orm:"failed_count"         ` //
+	ErrorMessage       string    `json:"errorMessage"       orm:"error_message"        ` //
 	CreatedAt          time.Time `json:"createdAt"          orm:"created_at"           ` //
 	UpdatedAt          time.Time `json:"updatedAt"          orm:"updated_at"           ` //
 }

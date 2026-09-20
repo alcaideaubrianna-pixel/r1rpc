@@ -126,6 +126,7 @@ func ensureColumns(ctx context.Context, db *sql.DB, schema string) error {
 		{Table: "channel_scan_tasks", Name: "image_search_request_id", Def: "CHAR(32) NOT NULL DEFAULT ''"},
 		{Table: "channel_scan_tasks", Name: "search_task_id", Def: "CHAR(32) NOT NULL DEFAULT ''"},
 		{Table: "channel_scan_tasks", Name: "search_config_id", Def: "CHAR(32) NOT NULL DEFAULT ''"},
+		{Table: "search_tasks", Name: "error_message", Def: "VARCHAR(1024) NOT NULL DEFAULT ''"},
 	}
 	for _, c := range columns {
 		exists, err := columnExists(ctx, db, schema, c.Table, c.Name)

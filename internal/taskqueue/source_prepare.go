@@ -40,11 +40,17 @@ func (p *Processor) prepareSourceSearch(ctx context.Context, taskID string) erro
 		return p.markSourcePrepareError(ctx, scan.Id, err)
 	}
 	searchTaskID := sourceSearchTaskID(scan)
-	_, err = dao.SearchTasks.Ctx(ctx).Data(do.SearchTasks{Id: searchTaskID, SourceType: "channel_scan", SourceTaskId: searchTaskID, Title: scan.ChannelTitle, ConfigId: config.Id, ConfigSnapshotJson: snapshot, Status: "preparing"}).InsertIgnore()
+	relations, err := loadScanRelations(ctx, scan)
 	if err != nil {
 		return p.markSourcePrepareError(ctx, scan.Id, err)
 	}
-	relations, err := loadScanRelations(ctx, scan.Id)
+	if len(relations) == 0 {
+		cause := gerror.New("扫描结果没有资料")
+		_, _ = dao.SearchTasks.Ctx(ctx).Where(dao.SearchTasks.Columns().Id, searchTaskID).
+			Data(do.SearchTasks{Status: "failed", ErrorMessage: cause.Error()}).Update()
+		return p.markSourcePrepareError(ctx, scan.Id, cause)
+	}
+	_, err = dao.SearchTasks.Ctx(ctx).Data(do.SearchTasks{Id: searchTaskID, SourceType: "channel_scan", SourceTaskId: searchTaskID, Title: scan.ChannelTitle, ConfigId: config.Id, ConfigSnapshotJson: snapshot, Status: "preparing"}).InsertIgnore()
 	if err != nil {
 		return p.markSourcePrepareError(ctx, scan.Id, err)
 	}
@@ -55,10 +61,7 @@ func (p *Processor) prepareSourceSearch(ctx context.Context, taskID string) erro
 		}
 		created++
 	}
-	if created == 0 {
-		return p.markSourcePrepareError(ctx, scan.Id, gerror.New("扫描结果没有资料"))
-	}
-	_, _ = dao.SearchTasks.Ctx(ctx).Where(dao.SearchTasks.Columns().Id, searchTaskID).Data(do.SearchTasks{Status: "running", TotalCount: created, SearchCount: created}).Update()
+	_, _ = dao.SearchTasks.Ctx(ctx).Where(dao.SearchTasks.Columns().Id, searchTaskID).Data(do.SearchTasks{Status: "running", TotalCount: created, SearchCount: created, ErrorMessage: ""}).Update()
 	status := "completed"
 	if scan.Mode == "continuous" {
 		status = "waiting"
@@ -68,20 +71,29 @@ func (p *Processor) prepareSourceSearch(ctx context.Context, taskID string) erro
 	return err
 }
 
-func loadScanRelations(ctx context.Context, scanID string) ([]entity.SourceScanTaskNotes, error) {
+func loadScanRelations(ctx context.Context, scan entity.ChannelScanTasks) ([]entity.SourceScanTaskNotes, error) {
 	relationColumns := dao.SourceScanTaskNotes.Columns()
 	var relations []entity.SourceScanTaskNotes
-	if err := dao.SourceScanTaskNotes.Ctx(ctx).Where(relationColumns.ScanTaskId, scanID).Scan(&relations); err != nil {
+	if err := dao.SourceScanTaskNotes.Ctx(ctx).Where(relationColumns.ScanTaskId, scan.Id).Scan(&relations); err != nil {
 		return nil, err
 	}
 	if len(relations) == 0 {
 		var legacyNotes []entity.SourceNotes
-		if err := dao.SourceNotes.Ctx(ctx).Where(dao.SourceNotes.Columns().ScanTaskId, scanID).Scan(&legacyNotes); err != nil {
+		noteColumns := dao.SourceNotes.Columns()
+		model := dao.SourceNotes.Ctx(ctx).Where(noteColumns.ScanTaskId, scan.Id)
+		if scan.Mode == "once" {
+			model = dao.SourceNotes.Ctx(ctx).
+				Where(noteColumns.DataSourceId, scan.DataSourceId).
+				Where(noteColumns.ChannelId, scan.ChannelId).
+				OrderDesc(noteColumns.CreatedAt).
+				Limit(scan.InitialLimit)
+		}
+		if err := model.Scan(&legacyNotes); err != nil {
 			return nil, err
 		}
 		for _, note := range legacyNotes {
-			relations = append(relations, entity.SourceScanTaskNotes{ScanTaskId: scanID, NoteId: note.Id})
-			_, _ = dao.SourceScanTaskNotes.Ctx(ctx).Data(do.SourceScanTaskNotes{Id: guid.S(), ScanTaskId: scanID, NoteId: note.Id}).InsertIgnore()
+			relations = append(relations, entity.SourceScanTaskNotes{ScanTaskId: scan.Id, NoteId: note.Id})
+			_, _ = dao.SourceScanTaskNotes.Ctx(ctx).Data(do.SourceScanTaskNotes{Id: guid.S(), ScanTaskId: scan.Id, NoteId: note.Id}).InsertIgnore()
 		}
 	}
 	return relations, nil

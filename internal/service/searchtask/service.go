@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"time"
 
 	"r1rpc/internal/dao"
 	"r1rpc/internal/model/do"
@@ -33,14 +34,20 @@ type Config struct {
 	entity.SearchConfigs
 	OCRKeywords []string `json:"ocrKeywords"`
 }
+type Task struct {
+	entity.SearchTasks
+	CompletedCount  int `json:"completedCount"`
+	ProgressPercent int `json:"progressPercent"`
+}
 type TaskPage struct {
-	Items          []entity.SearchTasks `json:"items"`
+	Items          []Task `json:"items"`
 	Page, PageSize int
 	Total          int64 `json:"total"`
 	TotalPages     int   `json:"totalPages"`
 }
 type ItemPage struct {
 	Items          []entity.SearchTaskItems `json:"items"`
+	Task           entity.SearchTasks       `json:"task"`
 	Page, PageSize int
 	Total          int64 `json:"total"`
 	TotalPages     int   `json:"totalPages"`
@@ -139,7 +146,19 @@ func (s *Service) ListTasks(ctx context.Context, page, pageSize int) (*TaskPage,
 	if len(rows) > 0 {
 		_ = model.OrderDesc(dao.SearchTasks.Columns().CreatedAt).Page(page, pageSize).Scan(&rows)
 	}
-	return &TaskPage{Items: rows, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
+	items := make([]Task, 0, len(rows))
+	for _, row := range rows {
+		completed, countErr := s.completedCount(ctx, row.Id)
+		if countErr != nil {
+			return nil, countErr
+		}
+		percent := 0
+		if row.TotalCount > 0 {
+			percent = completed * 100 / row.TotalCount
+		}
+		items = append(items, Task{SearchTasks: row, CompletedCount: completed, ProgressPercent: percent})
+	}
+	return &TaskPage{Items: items, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
 }
 func (s *Service) ListItems(ctx context.Context, taskID string, page, pageSize int) (*ItemPage, error) {
 	if err := s.refreshTask(ctx, taskID); err != nil {
@@ -160,13 +179,30 @@ func (s *Service) ListItems(ctx context.Context, taskID string, page, pageSize i
 	if err = model.OrderAsc(dao.SearchTaskItems.Columns().CreatedAt).Page(page, pageSize).Scan(&rows); err != nil {
 		return nil, err
 	}
-	return &ItemPage{Items: rows, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
+	var task entity.SearchTasks
+	if err = dao.SearchTasks.Ctx(ctx).Where(dao.SearchTasks.Columns().Id, taskID).Scan(&task); err != nil {
+		return nil, err
+	}
+	return &ItemPage{Items: rows, Task: task, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
 }
 func (s *Service) refreshTask(ctx context.Context, taskID string) error {
 	var items []entity.SearchTaskItems
 	cols := dao.SearchTaskItems.Columns()
 	if err := dao.SearchTaskItems.Ctx(ctx).Where(cols.SearchTaskId, taskID).Scan(&items); err != nil {
 		return err
+	}
+	if len(items) == 0 {
+		var task entity.SearchTasks
+		if err := dao.SearchTasks.Ctx(ctx).Where(dao.SearchTasks.Columns().Id, taskID).Scan(&task); err != nil {
+			return err
+		}
+		if task.Id != "" && task.Status != "failed" && time.Since(task.CreatedAt) > time.Minute {
+			_, err := dao.SearchTasks.Ctx(ctx).Where(dao.SearchTasks.Columns().Id, taskID).Data(do.SearchTasks{
+				Status: "failed", ErrorMessage: "准备阶段未生成任何资料，请检查扫描任务和数据源响应",
+			}).Update()
+			return err
+		}
+		return nil
 	}
 	counts := map[string]int{}
 	for _, item := range items {
@@ -211,6 +247,12 @@ func (s *Service) refreshTask(ctx context.Context, taskID string) error {
 	}
 	_, err := dao.SearchTasks.Ctx(ctx).Where(dao.SearchTasks.Columns().Id, taskID).Data(do.SearchTasks{Status: status, TotalCount: len(items), SearchCount: len(items) - counts["filtered"], FilteredCount: counts["filtered"], MatchedCount: counts["matched"], FailedCount: failed}).Update()
 	return err
+}
+
+func (s *Service) completedCount(ctx context.Context, taskID string) (int, error) {
+	columns := dao.SearchTaskItems.Columns()
+	return dao.SearchTaskItems.Ctx(ctx).Where(columns.SearchTaskId, taskID).
+		WhereIn(columns.Status, []string{"completed", "partial_failed", "failed", "cancelled"}).Count()
 }
 func cleanKeywords(values []string) []string {
 	out := make([]string, 0, len(values))

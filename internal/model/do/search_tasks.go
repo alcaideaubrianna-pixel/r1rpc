@@ -23,6 +23,7 @@ type SearchTasks struct {
 	SearchCount        any //
 	MatchedCount       any //
 	FailedCount        any //
+	ErrorMessage       any //
 	CreatedAt          any //
 	UpdatedAt          any //
 }

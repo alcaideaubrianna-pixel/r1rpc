@@ -208,6 +208,7 @@ CREATE TABLE IF NOT EXISTS search_tasks (
     search_count INT NOT NULL DEFAULT 0,
     matched_count INT NOT NULL DEFAULT 0,
     failed_count INT NOT NULL DEFAULT 0,
+    error_message VARCHAR(1024) NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_search_tasks_source (source_type, source_task_id),
