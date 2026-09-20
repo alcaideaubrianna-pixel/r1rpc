@@ -146,6 +146,15 @@ func (s *Service) ensureAsset(ctx context.Context, tx gdb.TX, fileID string) (st
 		return "", gerror.Wrap(err, "查询图片资产失败")
 	}
 	if !assetID.IsEmpty() {
+		_, err = tx.Model(dao.ImageAssets.Table()).Ctx(ctx).
+			Where(assetColumns.Id, assetID.String()).
+			Data(do.ImageAssets{
+				FileId: fileRecord.ID, MimeType: fileRecord.ContentType,
+				SizeBytes: fileRecord.SizeBytes, ObjectKey: fileRecord.ObjectKey,
+			}).Update()
+		if err != nil {
+			return "", gerror.Wrap(err, "刷新图片资产存储引用失败")
+		}
 		return assetID.String(), nil
 	}
 	newAssetID := guid.S()
