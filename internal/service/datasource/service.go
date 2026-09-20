@@ -6,8 +6,10 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -302,7 +304,7 @@ func (s *Service) saveChannel(ctx context.Context, sourceID string, channel fein
 	if err := dao.SourceChannels.Ctx(ctx).
 		Where(columns.DataSourceId, sourceID).
 		Where(columns.ChannelId, channel.ID).
-		Scan(&current); err != nil {
+		Scan(&current); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	raw, _ := json.Marshal(channel)
