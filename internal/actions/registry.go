@@ -46,6 +46,11 @@ var registry = map[string]Definition{
 			{Path: "uploadHandle", Type: "text", Label: "上传句柄", Description: "已有上传句柄时可直接搜索"},
 		},
 	},
+	"content.user_info": {
+		Name:            "content.user_info",
+		PayloadTemplate: map[string]any{"userId": "", "noteId": "", "channelTab": "note_detail_r10", "timeoutMilliseconds": 15000, "allowCacheFallback": true},
+		Inputs:          []Input{{Path: "userId", Type: "text", Label: "用户 ID", Required: true}, {Path: "noteId", Type: "text", Label: "笔记 ID"}},
+	},
 	"diagnostics.image_search_native_probe": {
 		Name:            "diagnostics.image_search_native_probe",
 		PayloadTemplate: map[string]any{"uploadHandle": ""},

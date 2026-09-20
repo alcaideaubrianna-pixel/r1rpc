@@ -18,10 +18,3 @@ func TestParseResponseFromNetworkEnvelope(t *testing.T) {
 		t.Fatalf("fans = %d", got)
 	}
 }
-
-func TestNoteFileID(t *testing.T) {
-	raw := "https://sns-na-i4.xhscdn.com/notes_pre_post/1040g3k831ufeu16h36d05q3ght36s1t02jc3ma8?imageView2/2/w/576"
-	if got := noteFileID(raw); got != "notes_pre_post/1040g3k831ufeu16h36d05q3ght36s1t02jc3ma8" {
-		t.Fatalf("noteFileID() = %q", got)
-	}
-}

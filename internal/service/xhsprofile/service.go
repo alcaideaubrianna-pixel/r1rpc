@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -53,13 +52,14 @@ func (s *Service) Get(ctx context.Context, userID, candidateID string, invoke In
 		cached.Cached = true
 		return cached, nil
 	}
-	clientID, extParams, err := candidateContext(ctx, candidateID)
+	clientID, noteID, err := candidateContext(ctx, candidateID)
 	if err != nil {
 		return nil, err
 	}
-	payload, _ := json.Marshal(map[string]any{"path": "/api/sns/v3/user/info", "method": "GET", "query": map[string]string{
-		"user_id": userID, "cny_source": "note_detail_r10", "ext_params": extParams,
-		"new_page_exp": "1", "profile_page_head_exp": "1"}, "timeoutMilliseconds": 15000})
+	payload, _ := json.Marshal(map[string]any{
+		"userId": userID, "noteId": noteID, "channelTab": "note_detail_r10",
+		"timeoutMilliseconds": 15000, "allowCacheFallback": true,
+	})
 	raw, err := invoke(ctx, clientID, payload)
 	if err != nil {
 		return nil, err
@@ -126,25 +126,7 @@ func candidateContext(ctx context.Context, candidateID string) (string, string, 
 	if err := dao.ImageJobs.Ctx(ctx).Where(dao.ImageJobs.Columns().Id, candidate.JobId).Scan(&job); err != nil {
 		return "", "", err
 	}
-	var image entity.ImageCandidateImages
-	imageColumns := dao.ImageCandidateImages.Columns()
-	_ = dao.ImageCandidateImages.Ctx(ctx).Where(imageColumns.CandidateId, candidate.Id).
-		Where(imageColumns.DownloadStatus, "analyzed").OrderDesc(imageColumns.Score).OrderAsc(imageColumns.ImageIndex).Limit(1).Scan(&image)
-	fileID := noteFileID(image.SourceUrl)
-	ext, _ := json.Marshal(map[string]any{"mention_sku_note_file_ids": []string{fileID}, "mention_sku_note_id": candidate.ContentId, "mention_sku_note_type": "normal"})
-	return job.AssignedClientId, string(ext), nil
-}
-
-func noteFileID(raw string) string {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return ""
-	}
-	path := strings.TrimPrefix(parsed.Path, "/")
-	if index := strings.Index(path, "notes_pre_post/"); index >= 0 {
-		return path[index:]
-	}
-	return path
+	return job.AssignedClientId, candidate.ContentId, nil
 }
 
 func parseResponse(raw json.RawMessage) (map[string]any, error) {
