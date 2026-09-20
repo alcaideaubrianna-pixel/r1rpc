@@ -22,6 +22,25 @@ type Client struct {
 	HTTPClient                           *http.Client
 }
 type Timestamp struct{ time.Time }
+type StringID string
+
+func (id *StringID) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*id = ""
+		return nil
+	}
+	var value string
+	if err := json.Unmarshal(data, &value); err == nil {
+		*id = StringID(value)
+		return nil
+	}
+	var number json.Number
+	if err := json.Unmarshal(data, &number); err != nil {
+		return fmt.Errorf("ID 必须是字符串或数字: %w", err)
+	}
+	*id = StringID(number.String())
+	return nil
+}
 
 func (t *Timestamp) UnmarshalJSON(data []byte) error {
 	value := strings.Trim(string(data), `"`)
@@ -74,7 +93,8 @@ type Media struct {
 type Note struct {
 	ID              int64          `json:"note_id"`
 	NoteCode        string         `json:"note_code"`
-	SourceMessageID string         `json:"source_message_id"`
+	SourceMessageID StringID       `json:"source_message_id"`
+	GroupedID       StringID       `json:"grouped_id"`
 	Title           string         `json:"title"`
 	PlainText       *string        `json:"plain_text"`
 	Attributes      map[string]any `json:"attributes"`

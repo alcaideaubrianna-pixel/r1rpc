@@ -57,3 +57,27 @@ func TestChannelNormalizesUpstreamID(t *testing.T) {
 		t.Fatalf("标准化响应不匹配: %s", encoded)
 	}
 }
+
+func TestNoteAcceptsNumericAndStringSourceIDs(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		message string
+		grouped string
+	}{
+		{name: "数字", payload: `{"source_message_id":123456,"grouped_id":987654}`, message: "123456", grouped: "987654"},
+		{name: "字符串", payload: `{"source_message_id":"123456","grouped_id":"987654"}`, message: "123456", grouped: "987654"},
+		{name: "空值", payload: `{"source_message_id":null,"grouped_id":null}`, message: "", grouped: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var note Note
+			if err := json.Unmarshal([]byte(test.payload), &note); err != nil {
+				t.Fatalf("解析笔记 ID 失败: %v", err)
+			}
+			if string(note.SourceMessageID) != test.message || string(note.GroupedID) != test.grouped {
+				t.Fatalf("ID 不匹配: message=%q grouped=%q", note.SourceMessageID, note.GroupedID)
+			}
+		})
+	}
+}
