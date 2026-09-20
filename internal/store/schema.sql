@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS channel_scan_tasks (
     next_run_at DATETIME NULL,
     last_success_at DATETIME NULL,
     last_error VARCHAR(1024) NOT NULL DEFAULT '',
+    image_search_request_id CHAR(32) NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_channel_scan_tasks_due (status, next_run_at),
@@ -148,6 +149,15 @@ CREATE TABLE IF NOT EXISTS source_note_images (
     UNIQUE KEY uk_source_note_images_asset (note_id, external_asset_id),
     INDEX idx_source_note_images_queue (download_status, preprocess_status),
     INDEX idx_source_note_images_note (note_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS source_scan_task_notes (
+    id CHAR(32) PRIMARY KEY,
+    scan_task_id CHAR(32) NOT NULL,
+    note_id CHAR(32) NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_source_scan_task_notes (scan_task_id, note_id),
+    INDEX idx_source_scan_task_notes_note (note_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS ocr_filter_rules (

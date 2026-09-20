@@ -27,6 +27,7 @@ import (
 
 type Enqueuer interface {
 	EnqueueSourceScan(context.Context, string, int) error
+	EnqueueSourcePrepare(context.Context, string) error
 }
 type Service struct {
 	key      [32]byte
@@ -133,6 +134,11 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 		return s.failScan(ctx, task, err)
 	}
 	_, _ = dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, task.Id).Data(do.ChannelScanTasks{Status: "running", LastError: ""}).Update()
+	if task.CursorValue == "" {
+		if _, err := dao.SourceScanTaskNotes.Ctx(ctx).Where(dao.SourceScanTaskNotes.Columns().ScanTaskId, task.Id).Delete(); err != nil {
+			return s.failScan(ctx, task, err)
+		}
+	}
 	updatedAfter := ""
 	if !task.Watermark.IsZero() {
 		updatedAfter = task.Watermark.Format(time.RFC3339)
@@ -150,7 +156,12 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 			return err
 		}
 		var saved entity.SourceNotes
-		_ = dao.SourceNotes.Ctx(ctx).Where(dao.SourceNotes.Columns().DataSourceId, task.DataSourceId).Where(dao.SourceNotes.Columns().ChannelId, task.ChannelId).Where(dao.SourceNotes.Columns().ExternalNoteId, fmt.Sprint(note.ID)).Scan(&saved)
+		if err = dao.SourceNotes.Ctx(ctx).Where(dao.SourceNotes.Columns().DataSourceId, task.DataSourceId).Where(dao.SourceNotes.Columns().ChannelId, task.ChannelId).Where(dao.SourceNotes.Columns().ExternalNoteId, fmt.Sprint(note.ID)).Scan(&saved); err != nil {
+			return err
+		}
+		if _, err = dao.SourceScanTaskNotes.Ctx(ctx).Data(do.SourceScanTaskNotes{Id: guid.S(), ScanTaskId: task.Id, NoteId: saved.Id}).InsertIgnore(); err != nil {
+			return err
+		}
 		for _, media := range note.Media {
 			if media.AssetType != "image" || media.PreviewURI == "" {
 				continue
@@ -163,7 +174,7 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 		}
 	}
 	update := do.ChannelScanTasks{
-		Status:        "completed",
+		Status:        "preparing",
 		CursorValue:   "",
 		Watermark:     page.Watermark.Time,
 		NextRunAt:     nil,
@@ -177,7 +188,6 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 		update.Watermark = task.Watermark
 		update.NextRunAt = time.Now()
 	} else if task.Mode == "continuous" {
-		update.Status = "waiting"
 		update.NextRunAt = time.Now().Add(time.Duration(task.PollIntervalMinutes) * time.Minute)
 	}
 	if _, err = dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, task.Id).Data(update).Update(); err != nil {
@@ -185,6 +195,9 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 	}
 	if shouldContinue && s.enqueuer != nil {
 		return s.enqueuer.EnqueueSourceScan(ctx, task.Id, task.Priority)
+	}
+	if !shouldContinue && s.enqueuer != nil {
+		return s.enqueuer.EnqueueSourcePrepare(ctx, task.Id)
 	}
 	return nil
 }

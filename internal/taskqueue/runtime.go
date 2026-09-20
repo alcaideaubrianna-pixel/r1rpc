@@ -65,6 +65,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 	mux.HandleFunc(TaskTypeImageAnalyze, processor.ProcessImageAnalysis)
 	mux.HandleFunc(TaskTypeImageDownload, processor.ProcessImageDownload)
 	mux.HandleFunc(TaskTypeSourceScan, processor.ProcessSourceScan)
+	mux.HandleFunc(TaskTypeSourcePrepare, processor.ProcessSourcePrepare)
 	if err := r.server.Start(mux); err != nil {
 		return err
 	}
@@ -131,6 +132,30 @@ func (r *Runtime) recoverSourceScans(ctx context.Context) error {
 	}
 	for _, task := range tasks {
 		if err := r.enqueuer.EnqueueSourceScan(ctx, task.Id, task.Priority); err != nil {
+			return err
+		}
+	}
+	var preparing []entity.ChannelScanTasks
+	if err := dao.ChannelScanTasks.Ctx(ctx).Where(columns.Status, "preparing").OrderAsc(columns.UpdatedAt).Limit(100).Scan(&preparing); err != nil {
+		return err
+	}
+	for _, task := range preparing {
+		if err := r.enqueuer.EnqueueSourcePrepare(ctx, task.Id); err != nil {
+			return err
+		}
+	}
+	var legacy []entity.ChannelScanTasks
+	if err := dao.ChannelScanTasks.Ctx(ctx).
+		Where(columns.Status, "completed").Where(columns.ImageSearchRequestId, "").
+		OrderAsc(columns.UpdatedAt).Limit(100).Scan(&legacy); err != nil {
+		return err
+	}
+	for _, task := range legacy {
+		if _, err := dao.ChannelScanTasks.Ctx(ctx).Where(columns.Id, task.Id).
+			Data(do.ChannelScanTasks{Status: "preparing"}).Update(); err != nil {
+			return err
+		}
+		if err := r.enqueuer.EnqueueSourcePrepare(ctx, task.Id); err != nil {
 			return err
 		}
 	}

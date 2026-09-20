@@ -15,6 +15,7 @@ const (
 	TaskTypeImageAnalyze  = "image:analyze:v1"
 	TaskTypeImageDownload = "image:download:v1"
 	TaskTypeSourceScan    = "source:scan:v1"
+	TaskTypeSourcePrepare = "source:prepare:v1"
 	imageQueue            = "image"
 	analysisQueue         = "image_analysis"
 	downloadQueue         = "image_download"
@@ -72,6 +73,18 @@ func (e *Enqueuer) EnqueueSourceScan(ctx context.Context, taskID string, priorit
 		return err
 	}
 	_, err = e.client.EnqueueContext(ctx, asynq.NewTask(TaskTypeSourceScan, payload), asynq.Queue(sourceScanQueue), asynq.MaxRetry(5), asynq.Timeout(2*time.Minute), asynq.Unique(4*time.Minute))
+	if errors.Is(err, asynq.ErrDuplicateTask) {
+		return nil
+	}
+	return err
+}
+
+func (e *Enqueuer) EnqueueSourcePrepare(ctx context.Context, taskID string) error {
+	payload, err := json.Marshal(sourceScanPayload{TaskID: strings.TrimSpace(taskID)})
+	if err != nil {
+		return err
+	}
+	_, err = e.client.EnqueueContext(ctx, asynq.NewTask(TaskTypeSourcePrepare, payload), asynq.Queue(downloadQueue), asynq.MaxRetry(5), asynq.Timeout(20*time.Minute), asynq.Unique(10*time.Minute))
 	if errors.Is(err, asynq.ErrDuplicateTask) {
 		return nil
 	}

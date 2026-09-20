@@ -21,42 +21,44 @@ type ChannelScanTasksDao struct {
 
 // ChannelScanTasksColumns defines and stores column names for the table channel_scan_tasks.
 type ChannelScanTasksColumns struct {
-	Id                  string //
-	DataSourceId        string //
-	ChannelId           string //
-	ChannelTitle        string //
-	Mode                string //
-	InitialLimit        string //
-	PollIntervalMinutes string //
-	Priority            string //
-	Status              string //
-	CursorValue         string //
-	Watermark           string //
-	NextRunAt           string //
-	LastSuccessAt       string //
-	LastError           string //
-	CreatedAt           string //
-	UpdatedAt           string //
+	Id                   string //
+	DataSourceId         string //
+	ChannelId            string //
+	ChannelTitle         string //
+	Mode                 string //
+	InitialLimit         string //
+	PollIntervalMinutes  string //
+	Priority             string //
+	Status               string //
+	CursorValue          string //
+	Watermark            string //
+	NextRunAt            string //
+	LastSuccessAt        string //
+	LastError            string //
+	ImageSearchRequestId string //
+	CreatedAt            string //
+	UpdatedAt            string //
 }
 
 // channelScanTasksColumns holds the columns for the table channel_scan_tasks.
 var channelScanTasksColumns = ChannelScanTasksColumns{
-	Id:                  "id",
-	DataSourceId:        "data_source_id",
-	ChannelId:           "channel_id",
-	ChannelTitle:        "channel_title",
-	Mode:                "mode",
-	InitialLimit:        "initial_limit",
-	PollIntervalMinutes: "poll_interval_minutes",
-	Priority:            "priority",
-	Status:              "status",
-	CursorValue:         "cursor_value",
-	Watermark:           "watermark",
-	NextRunAt:           "next_run_at",
-	LastSuccessAt:       "last_success_at",
-	LastError:           "last_error",
-	CreatedAt:           "created_at",
-	UpdatedAt:           "updated_at",
+	Id:                   "id",
+	DataSourceId:         "data_source_id",
+	ChannelId:            "channel_id",
+	ChannelTitle:         "channel_title",
+	Mode:                 "mode",
+	InitialLimit:         "initial_limit",
+	PollIntervalMinutes:  "poll_interval_minutes",
+	Priority:             "priority",
+	Status:               "status",
+	CursorValue:          "cursor_value",
+	Watermark:            "watermark",
+	NextRunAt:            "next_run_at",
+	LastSuccessAt:        "last_success_at",
+	LastError:            "last_error",
+	ImageSearchRequestId: "image_search_request_id",
+	CreatedAt:            "created_at",
+	UpdatedAt:            "updated_at",
 }
 
 // NewChannelScanTasksDao creates and returns a new DAO object for table data access.

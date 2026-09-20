@@ -33,7 +33,7 @@ dev-logs:
 
 dao:
 	@test -n "$${R1RPC_DAO_DSN}" || (echo "必须通过 R1RPC_DAO_DSN 提供本地数据库连接串" >&2; exit 1)
-	gf gen dao -l "$${R1RPC_DAO_DSN}" -t "files,storage_settings,image_*,xhs_user_profiles,data_sources,source_channels,channel_scan_tasks,source_notes,source_note_images,ocr_filter_rules" -p internal -s
+	gf gen dao -l "$${R1RPC_DAO_DSN}" -t "files,storage_settings,image_*,xhs_user_profiles,data_sources,source_channels,channel_scan_tasks,source_notes,source_note_images,source_scan_task_notes,ocr_filter_rules" -p internal -s
 
 ctrl:
 	gf gen ctrl -s api -d internal/controller

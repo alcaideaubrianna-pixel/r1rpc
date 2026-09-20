@@ -10,21 +10,22 @@ import (
 
 // ChannelScanTasks is the golang structure of table channel_scan_tasks for DAO operations like Where/Data.
 type ChannelScanTasks struct {
-	g.Meta              `orm:"table:channel_scan_tasks, do:true"`
-	Id                  any //
-	DataSourceId        any //
-	ChannelId           any //
-	ChannelTitle        any //
-	Mode                any //
-	InitialLimit        any //
-	PollIntervalMinutes any //
-	Priority            any //
-	Status              any //
-	CursorValue         any //
-	Watermark           any //
-	NextRunAt           any //
-	LastSuccessAt       any //
-	LastError           any //
-	CreatedAt           any //
-	UpdatedAt           any //
+	g.Meta               `orm:"table:channel_scan_tasks, do:true"`
+	Id                   any //
+	DataSourceId         any //
+	ChannelId            any //
+	ChannelTitle         any //
+	Mode                 any //
+	InitialLimit         any //
+	PollIntervalMinutes  any //
+	Priority             any //
+	Status               any //
+	CursorValue          any //
+	Watermark            any //
+	NextRunAt            any //
+	LastSuccessAt        any //
+	LastError            any //
+	ImageSearchRequestId any //
+	CreatedAt            any //
+	UpdatedAt            any //
 }
