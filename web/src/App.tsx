@@ -13,6 +13,7 @@ import UsersPage from './pages/UsersPage'
 import FilesPage from './pages/FilesPage'
 import ImageSearchPage from './pages/ImageSearchPage'
 import ImageSearchDetailPage from './pages/ImageSearchDetailPage'
+import DataSourcesPage from './pages/DataSourcesPage'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const loc = useLocation()
@@ -41,6 +42,7 @@ export default function App() {
         <Route path="files" element={<FilesPage />} />
         <Route path="image-search" element={<ImageSearchPage />} />
         <Route path="image-search/:id" element={<ImageSearchDetailPage />} />
+        <Route path="data-sources" element={<DataSourcesPage />} />
         <Route path="users" element={<UsersPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/overview" replace />} />

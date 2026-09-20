@@ -3,7 +3,7 @@ gfcli:
     dao:
       # 实际生成时通过 R1RPC_DAO_DSN 注入连接串，不在仓库保存凭据。
       - link: "mysql:USER:PASSWORD@tcp(127.0.0.1:3306)/r1rpc"
-        tables: "files,storage_settings,image_*,xhs_user_profiles"
+        tables: "files,storage_settings,image_*,xhs_user_profiles,data_sources,channel_scan_tasks,source_notes,source_note_images,ocr_filter_rules"
         path: "internal"
         group: "default"
         jsonCase: "CamelLower"

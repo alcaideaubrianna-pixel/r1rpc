@@ -21,6 +21,7 @@ import (
 	localfiles "r1rpc/internal/files"
 	"r1rpc/internal/model"
 	"r1rpc/internal/rpc"
+	"r1rpc/internal/service/datasource"
 	"r1rpc/internal/service/imagesearch"
 	"r1rpc/internal/service/imagetask"
 	"r1rpc/internal/service/storagesetting"
@@ -105,6 +106,7 @@ type App struct {
 	ImageSearch     *imagesearch.Service
 	StorageSettings *storagesetting.Service
 	XHSProfiles     *xhsprofile.Service
+	DataSources     *datasource.Service
 	DebugPairs      *DebugPairingManager
 
 	presenceMu        sync.Mutex
@@ -185,6 +187,7 @@ func New(cfg config.Config, st *store.Store) *App {
 		ImageSearch:       imagesearch.New(fileService),
 		StorageSettings:   storagesetting.New(cfg.JWTSecret),
 		XHSProfiles:       xhsprofile.New(fileService),
+		DataSources:       datasource.New(cfg.JWTSecret),
 		DebugPairs:        NewDebugPairingManager(2 * time.Minute),
 		lastPresenceFlush: map[string]time.Time{},
 		persistCh:         make(chan persistTask, queueSize),

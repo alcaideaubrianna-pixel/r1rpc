@@ -56,6 +56,97 @@ CREATE TABLE IF NOT EXISTS storage_settings (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS data_sources (
+    id CHAR(32) PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    base_url VARCHAR(512) NOT NULL,
+    app_id VARCHAR(128) NOT NULL,
+    access_key VARCHAR(256) NOT NULL,
+    secret_key_encrypted TEXT NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'enabled',
+    request_timeout_seconds INT NOT NULL DEFAULT 30,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_data_sources_name (name),
+    INDEX idx_data_sources_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS channel_scan_tasks (
+    id CHAR(32) PRIMARY KEY,
+    data_source_id CHAR(32) NOT NULL,
+    channel_id BIGINT NOT NULL,
+    channel_title VARCHAR(255) NOT NULL DEFAULT '',
+    mode VARCHAR(16) NOT NULL DEFAULT 'once',
+    initial_limit INT NOT NULL DEFAULT 10,
+    poll_interval_minutes INT NOT NULL DEFAULT 10,
+    priority INT NOT NULL DEFAULT 0,
+    status VARCHAR(16) NOT NULL DEFAULT 'created',
+    cursor_value VARCHAR(512) NOT NULL DEFAULT '',
+    watermark DATETIME NULL,
+    next_run_at DATETIME NULL,
+    last_success_at DATETIME NULL,
+    last_error VARCHAR(1024) NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_channel_scan_tasks_due (status, next_run_at),
+    INDEX idx_channel_scan_tasks_source_channel (data_source_id, channel_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS source_notes (
+    id CHAR(32) PRIMARY KEY,
+    data_source_id CHAR(32) NOT NULL,
+    scan_task_id CHAR(32) NOT NULL,
+    channel_id BIGINT NOT NULL,
+    external_note_id VARCHAR(128) NOT NULL,
+    note_code VARCHAR(128) NOT NULL DEFAULT '',
+    title VARCHAR(512) NOT NULL DEFAULT '',
+    plain_text LONGTEXT NULL,
+    attributes_json LONGTEXT NULL,
+    raw_json LONGTEXT NULL,
+    status VARCHAR(24) NOT NULL DEFAULT 'received',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_source_notes_source_note (data_source_id, channel_id, external_note_id),
+    INDEX idx_source_notes_task_created (scan_task_id, created_at),
+    INDEX idx_source_notes_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS source_note_images (
+    id CHAR(32) PRIMARY KEY,
+    note_id CHAR(32) NOT NULL,
+    external_asset_id VARCHAR(128) NOT NULL DEFAULT '',
+    asset_type VARCHAR(32) NOT NULL DEFAULT 'image',
+    source_url VARCHAR(2048) NOT NULL,
+    file_id CHAR(32) NOT NULL DEFAULT '',
+    sha256 CHAR(64) NOT NULL DEFAULT '',
+    phash VARCHAR(32) NOT NULL DEFAULT '',
+    download_status VARCHAR(24) NOT NULL DEFAULT 'pending',
+    preprocess_status VARCHAR(24) NOT NULL DEFAULT 'pending',
+    ocr_text LONGTEXT NULL,
+    filter_decision VARCHAR(24) NOT NULL DEFAULT 'pending',
+    filter_reason VARCHAR(1024) NOT NULL DEFAULT '',
+    raw_json LONGTEXT NULL,
+    image_index INT NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_source_note_images_asset (note_id, external_asset_id),
+    INDEX idx_source_note_images_queue (download_status, preprocess_status),
+    INDEX idx_source_note_images_note (note_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS ocr_filter_rules (
+    id CHAR(32) PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    mode VARCHAR(24) NOT NULL DEFAULT 'contains_any',
+    pattern_json LONGTEXT NOT NULL,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    version INT NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_ocr_filter_rules_name (name),
+    INDEX idx_ocr_filter_rules_enabled (enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS files (
     id CHAR(32) PRIMARY KEY,
     object_key VARCHAR(512) NOT NULL UNIQUE,
