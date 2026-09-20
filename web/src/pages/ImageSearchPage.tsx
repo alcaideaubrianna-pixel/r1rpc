@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Badge, Button, Card, Flex, Heading, Table, Text, TextField } from '@radix-ui/themes'
-import { PlusIcon, ReloadIcon, RocketIcon, TrashIcon } from '@radix-ui/react-icons'
+import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, ReloadIcon, RocketIcon, TrashIcon } from '@radix-ui/react-icons'
 import { get, post, upload } from '../api/client'
 import { useFetch } from '../lib/useFetch'
 import { notify } from '../lib/toast'
@@ -21,7 +21,8 @@ const newGroup = (): DraftGroup => ({ id: randomUUID(), subjectUserId: '', files
 
 export default function ImageSearchPage() {
   const navigate = useNavigate()
-  const requests = useFetch(() => get<SearchRequestPage>('/api/v1/image-search/requests?page=1&pageSize=50'))
+  const [page, setPage] = useState(1)
+  const requests = useFetch(() => get<SearchRequestPage>(`/api/v1/image-search/requests?page=${page}&pageSize=10`), [page])
   const [groups, setGroups] = useState<DraftGroup[]>([newGroup()])
   const [threshold, setThreshold] = useState('0.82')
   const [maxDistance, setMaxDistance] = useState('12')
@@ -124,6 +125,7 @@ export default function ImageSearchPage() {
         <Table.Root variant="surface"><Table.Header><Table.Row><Table.ColumnHeaderCell>任务</Table.ColumnHeaderCell><Table.ColumnHeaderCell>状态</Table.ColumnHeaderCell><Table.ColumnHeaderCell>图片组</Table.ColumnHeaderCell><Table.ColumnHeaderCell>结果</Table.ColumnHeaderCell><Table.ColumnHeaderCell>创建时间</Table.ColumnHeaderCell><Table.ColumnHeaderCell /></Table.Row></Table.Header>
           <Table.Body>{(requests.data?.items ?? []).map((item) => <Table.Row key={item.id} align="center"><Table.RowHeaderCell><Text size="2" weight="medium">{item.externalId || item.id}</Text><Text as="div" size="1" color="gray">{item.id}</Text></Table.RowHeaderCell><Table.Cell><Badge color={statusColor(item.status)}>{statusLabel(item.status)}</Badge></Table.Cell><Table.Cell>{item.groupCount}</Table.Cell><Table.Cell><Flex gap="2"><Badge color="green" variant="soft">命中 {item.matchedCount}</Badge><Badge color="gray" variant="soft">未命中 {item.notMatchedCount}</Badge>{item.failedCount > 0 && <Badge color="red">失败 {item.failedCount}</Badge>}</Flex></Table.Cell><Table.Cell>{fmtTime(item.createdAt)}</Table.Cell><Table.Cell><Button asChild size="1" variant="soft"><Link to={`/image-search/${item.id}`}>查看结果</Link></Button></Table.Cell></Table.Row>)}</Table.Body>
         </Table.Root>
+        {(requests.data?.total ?? 0) > 10 && <Flex align="center" justify="end" gap="3" mt="3"><Button variant="soft" color="gray" size="1" disabled={page <= 1} onClick={() => setPage((v) => v - 1)}><ChevronLeftIcon /> 上一页</Button><Text size="2" color="gray">第 {page} / {Math.ceil((requests.data?.total ?? 0) / 10)} 页</Text><Button variant="soft" color="gray" size="1" disabled={page >= Math.ceil((requests.data?.total ?? 0) / 10)} onClick={() => setPage((v) => v + 1)}>下一页 <ChevronRightIcon /></Button></Flex>}
       </Card>
     </Flex>
   )

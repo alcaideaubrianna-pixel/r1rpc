@@ -43,6 +43,10 @@ var yamlToEnvKey = []struct {
 	{"redis", "password", "REDIS_PASSWORD"},
 	{"redis", "db", "REDIS_DB"},
 	{"redis", "worker_concurrency", "REDIS_WORKER_CONCURRENCY"},
+	{"redis", "api_worker_concurrency", "REDIS_API_WORKER_CONCURRENCY"},
+	{"redis", "download_worker_concurrency", "REDIS_DOWNLOAD_WORKER_CONCURRENCY"},
+	{"redis", "scan_interval_seconds", "QUEUE_SCAN_INTERVAL_SECONDS"},
+	{"redis", "download_interval_seconds", "DOWNLOAD_SCAN_INTERVAL_SECONDS"},
 	{"storage", "backend", "STORAGE_BACKEND"},
 	{"storage", "local_path", "STORAGE_LOCAL_PATH"},
 	{"storage", "endpoint", "STORAGE_S3_ENDPOINT"},
@@ -101,10 +105,14 @@ type Config struct {
 }
 
 type RedisConfig struct {
-	Addr              string
-	Password          string
-	DB                int
-	WorkerConcurrency int
+	Addr                      string
+	Password                  string
+	DB                        int
+	WorkerConcurrency         int
+	APIWorkerConcurrency      int
+	DownloadWorkerConcurrency int
+	ScanInterval              time.Duration
+	DownloadInterval          time.Duration
 }
 
 type MySQLConfig struct {
@@ -173,10 +181,14 @@ func Load() (Config, error) {
 			ConnMaxLifetimeMinutes: getInt(values, "MYSQL_CONN_MAX_LIFETIME_MINUTES", 10),
 		},
 		Redis: RedisConfig{
-			Addr:              getString(values, "REDIS_ADDR", "127.0.0.1:6379"),
-			Password:          getString(values, "REDIS_PASSWORD", ""),
-			DB:                getInt(values, "REDIS_DB", 0),
-			WorkerConcurrency: getInt(values, "REDIS_WORKER_CONCURRENCY", 4),
+			Addr:                      getString(values, "REDIS_ADDR", "127.0.0.1:6379"),
+			Password:                  getString(values, "REDIS_PASSWORD", ""),
+			DB:                        getInt(values, "REDIS_DB", 0),
+			WorkerConcurrency:         getInt(values, "REDIS_WORKER_CONCURRENCY", 4),
+			APIWorkerConcurrency:      getInt(values, "REDIS_API_WORKER_CONCURRENCY", 2),
+			DownloadWorkerConcurrency: getInt(values, "REDIS_DOWNLOAD_WORKER_CONCURRENCY", 6),
+			ScanInterval:              time.Duration(getInt(values, "QUEUE_SCAN_INTERVAL_SECONDS", 5)) * time.Second,
+			DownloadInterval:          time.Duration(getInt(values, "DOWNLOAD_SCAN_INTERVAL_SECONDS", 2)) * time.Second,
 		},
 		Storage: StorageConfig{
 			Backend:   strings.ToLower(getString(values, "STORAGE_BACKEND", "file")),

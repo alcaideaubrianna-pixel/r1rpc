@@ -64,7 +64,10 @@ func main() {
 	application.StartBackgroundJobs(runCtx)
 	queueRuntime := taskqueue.NewRuntime(application,
 		taskqueue.RedisOptions(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB),
-		cfg.Redis.WorkerConcurrency,
+		cfg.Redis.APIWorkerConcurrency,
+		cfg.Redis.DownloadWorkerConcurrency,
+		cfg.Redis.ScanInterval,
+		cfg.Redis.DownloadInterval,
 	)
 	application.ImageTasks.SetEnqueuer(queueRuntime.Enqueuer())
 	application.ImageSearch.SetEnqueuer(queueRuntime.Enqueuer())

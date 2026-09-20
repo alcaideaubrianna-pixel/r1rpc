@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { Badge, Button, Card, Flex, Table, Text } from '@radix-ui/themes'
-import { DownloadIcon, ReloadIcon, TrashIcon, UploadIcon } from '@radix-ui/react-icons'
+import { ChevronLeftIcon, ChevronRightIcon, DownloadIcon, ReloadIcon, TrashIcon, UploadIcon } from '@radix-ui/react-icons'
 import { del, get, upload } from '../api/client'
 import { useFetch } from '../lib/useFetch'
 import { notify } from '../lib/toast'
@@ -13,8 +13,9 @@ const accept = 'image/jpeg,image/png,image/heic,image/heif'
 export default function FilesPage() {
   const inputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
+  const [page, setPage] = useState(1)
   const { data, loading, reload } = useFetch(
-    () => get<{ items: StoredFile[] }>('/api/files'),
+    () => get<{ items: StoredFile[]; page: number; totalPages: number }>(`/api/files?page=${page}&pageSize=10`), [page],
   )
   const files = data?.items ?? []
 
@@ -77,6 +78,7 @@ export default function FilesPage() {
             {!loading && files.length === 0 && <Table.Row><Table.Cell colSpan={5}><Text color="gray">暂无文件</Text></Table.Cell></Table.Row>}
           </Table.Body>
         </Table.Root>
+        {(data?.totalPages ?? 0) > 1 && <Flex align="center" justify="end" gap="3" mt="3"><Button variant="soft" color="gray" size="1" disabled={page <= 1} onClick={() => setPage((v) => v - 1)}><ChevronLeftIcon /> 上一页</Button><Text size="2" color="gray">第 {page} / {data?.totalPages} 页</Text><Button variant="soft" color="gray" size="1" disabled={page >= (data?.totalPages ?? 0)} onClick={() => setPage((v) => v + 1)}>下一页 <ChevronRightIcon /></Button></Flex>}
       </Card>
     </Flex>
   )

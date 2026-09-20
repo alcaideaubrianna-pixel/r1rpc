@@ -3,6 +3,7 @@ package taskqueue
 import (
 	"context"
 	"sync"
+	"time"
 
 	"r1rpc/internal/app"
 	"r1rpc/internal/dao"
@@ -14,22 +15,36 @@ import (
 )
 
 type Runtime struct {
-	server    *asynq.Server
-	enqueuer  *Enqueuer
-	app       *app.App
-	closeOnce sync.Once
+	server           *asynq.Server
+	enqueuer         *Enqueuer
+	app              *app.App
+	closeOnce        sync.Once
+	cancel           context.CancelFunc
+	scanInterval     time.Duration
+	downloadInterval time.Duration
 }
 
-func NewRuntime(application *app.App, redis asynq.RedisClientOpt, concurrency int) *Runtime {
-	if concurrency < 1 {
-		concurrency = 1
+func NewRuntime(application *app.App, redis asynq.RedisClientOpt, apiConcurrency, downloadConcurrency int, scanInterval, downloadInterval time.Duration) *Runtime {
+	if apiConcurrency < 1 {
+		apiConcurrency = 2
+	}
+	if downloadConcurrency < 1 {
+		downloadConcurrency = 6
+	}
+	if scanInterval <= 0 {
+		scanInterval = 5 * time.Second
+	}
+	if downloadInterval <= 0 {
+		downloadInterval = 2 * time.Second
 	}
 	return &Runtime{
-		app:      application,
-		enqueuer: NewEnqueuer(redis),
+		app:              application,
+		enqueuer:         NewEnqueuer(redis),
+		scanInterval:     scanInterval,
+		downloadInterval: downloadInterval,
 		server: asynq.NewServer(redis, asynq.Config{
-			Concurrency: concurrency,
-			Queues:      map[string]int{imageQueue: 2, analysisQueue: 2, downloadQueue: 6},
+			Concurrency: apiConcurrency + downloadConcurrency,
+			Queues:      map[string]int{imageQueue: apiConcurrency, analysisQueue: apiConcurrency, downloadQueue: downloadConcurrency},
 		}),
 	}
 }
@@ -51,16 +66,39 @@ func (r *Runtime) Start(ctx context.Context) error {
 		r.server.Shutdown()
 		return err
 	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	r.cancel = cancel
+	go r.runScanner(workerCtx)
 	return nil
 }
 
 func (r *Runtime) Close() error {
 	var closeErr error
 	r.closeOnce.Do(func() {
+		if r.cancel != nil {
+			r.cancel()
+		}
 		r.server.Shutdown()
 		closeErr = r.enqueuer.Close()
 	})
 	return closeErr
+}
+
+func (r *Runtime) runScanner(ctx context.Context) {
+	apiTicker := time.NewTicker(r.scanInterval)
+	downloadTicker := time.NewTicker(r.downloadInterval)
+	defer apiTicker.Stop()
+	defer downloadTicker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-apiTicker.C:
+			_ = r.recoverPending(ctx)
+		case <-downloadTicker.C:
+			_ = r.recoverPending(ctx)
+		}
+	}
 }
 
 func (r *Runtime) recoverPending(ctx context.Context) error {

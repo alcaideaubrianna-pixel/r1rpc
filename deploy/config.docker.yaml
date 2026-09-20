@@ -25,6 +25,10 @@ redis:
   password: ""
   db: 0
   worker_concurrency: 4
+  api_worker_concurrency: 2
+  download_worker_concurrency: 6
+  scan_interval_seconds: 5
+  download_interval_seconds: 2
 
 limits:
   client_max_in_flight: 1

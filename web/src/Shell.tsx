@@ -22,7 +22,6 @@ const NAV = [
   { to: '/requests', label: '调用记录', icon: <ReaderIcon /> },
   { to: '/invoke', label: 'RPC 调用', icon: <RocketIcon /> },
   { to: '/files', label: '文件管理', icon: <FileIcon /> },
-  { to: '/image-batches', label: '批量识图', icon: <ImageIcon /> },
   { to: '/image-search', label: '图片搜索', icon: <ImageIcon /> },
   { to: '/users', label: '账号', icon: <PersonIcon /> },
 ]
