@@ -55,6 +55,14 @@ func (s *Server) registerDataSourceRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, 200, result)
 	}))
+	mux.HandleFunc("GET /api/v1/data-sources/{id}/channels/search", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
+		result, err := s.App.DataSources.SearchChannels(r.PathValue("id"), r.URL.Query().Get("q"))
+		if err != nil {
+			writeError(w, 500, err)
+			return
+		}
+		writeJSON(w, 200, result)
+	}))
 	mux.HandleFunc("GET /api/v1/channel-scan-tasks", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		pageSize, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))

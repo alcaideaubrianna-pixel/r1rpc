@@ -39,6 +39,10 @@ type ChannelPage struct {
 	HasMore    bool             `json:"hasMore"`
 	Cached     bool             `json:"cached"`
 }
+type ChannelSearchResult struct {
+	Items  []feiniu.Channel `json:"items"`
+	Cached bool             `json:"cached"`
+}
 type channelCacheEntry struct {
 	page      ChannelPage
 	expiresAt time.Time
@@ -303,6 +307,33 @@ func (s *Service) Channels(ctx context.Context, id, cursor string, limit int) (*
 	s.channelCache[cacheKey] = channelCacheEntry{page: *result, expiresAt: time.Now().Add(5 * time.Minute)}
 	s.cacheMu.Unlock()
 	return result, nil
+}
+
+func (s *Service) SearchChannels(id, keyword string) (*ChannelSearchResult, error) {
+	keyword = strings.TrimSpace(strings.ToLower(keyword))
+	if keyword == "" {
+		return &ChannelSearchResult{Items: []feiniu.Channel{}, Cached: true}, nil
+	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	seen := make(map[int64]struct{})
+	items := make([]feiniu.Channel, 0)
+	now := time.Now()
+	for key, entry := range s.channelCache {
+		if !strings.HasPrefix(key, id+":") || now.After(entry.expiresAt) {
+			continue
+		}
+		for _, channel := range entry.page.Items {
+			if _, ok := seen[channel.ID]; ok {
+				continue
+			}
+			if strings.Contains(strings.ToLower(channel.Title), keyword) {
+				seen[channel.ID] = struct{}{}
+				items = append(items, channel)
+			}
+		}
+	}
+	return &ChannelSearchResult{Items: items, Cached: true}, nil
 }
 
 func (s *Service) clearChannelCache(id string) {
