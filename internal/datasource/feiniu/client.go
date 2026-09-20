@@ -40,11 +40,29 @@ func (t *Timestamp) UnmarshalJSON(data []byte) error {
 }
 
 type Channel struct {
-	ID       int64  `json:"channel_id"`
+	ID       int64  `json:"id"`
 	Title    string `json:"title"`
 	Username string `json:"username"`
 	ChatType string `json:"chat_type"`
 }
+
+func (c *Channel) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		ID       int64  `json:"channel_id"`
+		Title    string `json:"title"`
+		Username string `json:"username"`
+		ChatType string `json:"chat_type"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	c.ID = wire.ID
+	c.Title = wire.Title
+	c.Username = wire.Username
+	c.ChatType = wire.ChatType
+	return nil
+}
+
 type Media struct {
 	AssetID    int64  `json:"asset_id"`
 	AssetType  string `json:"asset_type"`

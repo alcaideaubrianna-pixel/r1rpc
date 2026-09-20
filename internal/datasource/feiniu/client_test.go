@@ -40,3 +40,20 @@ func TestPageUnmarshalNaiveWatermark(t *testing.T) {
 		t.Fatal("watermark 不应为空")
 	}
 }
+
+func TestChannelNormalizesUpstreamID(t *testing.T) {
+	var channel Channel
+	if err := json.Unmarshal([]byte(`{"channel_id":123,"title":"测试频道"}`), &channel); err != nil {
+		t.Fatalf("解析频道失败: %v", err)
+	}
+	if channel.ID != 123 {
+		t.Fatalf("频道 ID 不匹配: %d", channel.ID)
+	}
+	encoded, err := json.Marshal(channel)
+	if err != nil {
+		t.Fatalf("编码频道失败: %v", err)
+	}
+	if string(encoded) != `{"id":123,"title":"测试频道","username":"","chat_type":""}` {
+		t.Fatalf("标准化响应不匹配: %s", encoded)
+	}
+}
