@@ -77,6 +77,13 @@ type ScanTaskInput struct {
 }
 
 func (s *Service) SetEnqueuer(value Enqueuer) { s.enqueuer = value }
+func (s *Service) DownloadAsset(ctx context.Context, sourceID string, assetID int64) ([]byte, error) {
+	client, err := s.client(ctx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	return client.DownloadAsset(ctx, assetID)
+}
 func (s *Service) CreateScanTask(ctx context.Context, in ScanTaskInput) (*entity.ChannelScanTasks, error) {
 	if in.DataSourceID == "" || in.ChannelID <= 0 {
 		return nil, gerror.New("数据源和频道不能为空")

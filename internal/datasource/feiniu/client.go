@@ -167,6 +167,54 @@ func (c *Client) request(ctx context.Context, path string, query url.Values, out
 	return json.Unmarshal(envelope.Data, out)
 }
 
+func (c *Client) DownloadAsset(ctx context.Context, assetID int64) ([]byte, error) {
+	if assetID <= 0 {
+		return nil, fmt.Errorf("invalid asset ID")
+	}
+	if c.HTTPClient == nil {
+		c.HTTPClient = http.DefaultClient
+	}
+	base := strings.TrimRight(c.BaseURL, "/")
+	u, err := url.Parse(base + fmt.Sprintf("/open-api/v1/assets/%d/content", assetID))
+	if err != nil {
+		return nil, err
+	}
+	bodyHash := sha256.Sum256(nil)
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	nonce := fmt.Sprintf("%d", time.Now().UnixNano())
+	canonical := strings.Join([]string{"GET", u.Path, u.RawQuery, ts, nonce, hex.EncodeToString(bodyHash[:])}, "\n")
+	mac := hmac.New(sha256.New, []byte(c.SecretKey))
+	_, _ = mac.Write([]byte(canonical))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-App-Id", c.AppID)
+	req.Header.Set("X-App-Key", c.AccessKey)
+	req.Header.Set("X-App-Timestamp", ts)
+	req.Header.Set("X-App-Nonce", nonce)
+	req.Header.Set("X-App-Signature", hex.EncodeToString(mac.Sum(nil)))
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, (12<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("FeiNiu asset HTTP %d (%s): %s", resp.StatusCode, resp.Header.Get("Content-Type"), responsePreview(data))
+	}
+	if !strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "image/") {
+		return nil, fmt.Errorf("FeiNiu asset returned non-image content (%s): %s", resp.Header.Get("Content-Type"), responsePreview(data))
+	}
+	if len(data) == 0 || len(data) > 12<<20 {
+		return nil, fmt.Errorf("FeiNiu asset is empty or exceeds size limit")
+	}
+	return data, nil
+}
+
 func responsePreview(data []byte) string {
 	const max = 512
 	text := strings.TrimSpace(string(data))

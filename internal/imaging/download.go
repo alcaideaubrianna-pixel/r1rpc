@@ -14,10 +14,29 @@ import (
 const MaxDownloadBytes int64 = 12 << 20
 
 type Downloader struct {
-	client *http.Client
+	client          *http.Client
+	allowedHTTPHost string
 }
 
 func NewDownloader() *Downloader {
+	return newDownloader("")
+}
+
+// NewSourceDownloader 仅允许已由管理员配置的数据源主机使用 HTTP。
+// 候选图片仍必须使用 HTTPS，避免扩大通用下载器的 SSRF 攻击面。
+func NewSourceDownloader(baseURL string) (*Downloader, error) {
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Hostname() == "" {
+		return nil, fmt.Errorf("数据源 Base URL 无效")
+	}
+	allowedHTTPHost := ""
+	if parsed.Scheme == "http" {
+		allowedHTTPHost = strings.ToLower(parsed.Hostname())
+	}
+	return newDownloader(allowedHTTPHost), nil
+}
+
+func newDownloader(allowedHTTPHost string) *Downloader {
 	dialer := &net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
 		Proxy: nil,
@@ -41,10 +60,10 @@ func NewDownloader() *Downloader {
 			if len(via) >= 3 {
 				return fmt.Errorf("候选图片重定向次数过多")
 			}
-			return validateURL(req.Context(), req.URL)
+			return validateDownloadURL(req.Context(), req.URL, allowedHTTPHost)
 		},
 	}
-	return &Downloader{client: client}
+	return &Downloader{client: client, allowedHTTPHost: allowedHTTPHost}
 }
 
 func (d *Downloader) Download(ctx context.Context, rawURL string) ([]byte, error) {
@@ -52,7 +71,7 @@ func (d *Downloader) Download(ctx context.Context, rawURL string) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
-	if err := validateURL(ctx, parsed); err != nil {
+	if err := validateDownloadURL(ctx, parsed, d.allowedHTTPHost); err != nil {
 		return nil, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
@@ -98,7 +117,15 @@ func NormalizeCandidateURL(rawURL string) string {
 }
 
 func validateURL(ctx context.Context, parsed *url.URL) error {
-	if parsed == nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
+	return validateDownloadURL(ctx, parsed, "")
+}
+
+func validateDownloadURL(ctx context.Context, parsed *url.URL, allowedHTTPHost string) error {
+	if parsed == nil || parsed.Hostname() == "" {
+		return fmt.Errorf("候选图片只允许 HTTPS 地址")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && allowedHTTPHost != "" && host == allowedHTTPHost) {
 		return fmt.Errorf("候选图片只允许 HTTPS 地址")
 	}
 	_, err := safeIPs(ctx, parsed.Hostname())

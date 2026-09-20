@@ -1,8 +1,11 @@
 package imaging
 
 import (
+	"context"
 	"image"
 	"image/color"
+	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -28,6 +31,22 @@ func TestValidateURLRejectsUnsafeTargets(t *testing.T) {
 		if _, err := NewDownloader().Download(t.Context(), rawURL); err == nil {
 			t.Fatalf("Download(%q) should fail", rawURL)
 		}
+	}
+}
+
+func TestSourceDownloaderOnlyAllowsConfiguredHTTPHost(t *testing.T) {
+	downloader, err := NewSourceDownloader("http://127.0.0.1/prod-api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed, _ := url.Parse("http://127.0.0.1/telegram/resource/1")
+	other, _ := url.Parse("http://other.example.test/telegram/resource/1")
+	if err = validateDownloadURL(context.Background(), allowed, downloader.allowedHTTPHost); err == nil || !strings.Contains(err.Error(), "受限网络") {
+		// 受限网络错误证明 HTTP scheme/host 校验已通过，SSRF 校验仍然生效。
+		t.Fatalf("configured host validation returned %v", err)
+	}
+	if err = validateDownloadURL(context.Background(), other, downloader.allowedHTTPHost); err == nil || !strings.Contains(err.Error(), "HTTPS") {
+		t.Fatalf("other HTTP host should be rejected, got %v", err)
 	}
 }
 

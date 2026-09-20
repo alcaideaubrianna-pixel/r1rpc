@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"r1rpc/internal/dao"
@@ -192,12 +193,16 @@ func (p *Processor) prepareNoteImages(ctx context.Context, sourceID, noteID stri
 	for _, record := range records {
 		fileID := record.FileId
 		if fileID == "" {
-			resolved, err := p.sourceImageURL(ctx, sourceID, record.SourceUrl)
-			if err != nil {
-				p.failSourceImage(ctx, record.Id, err)
-				continue
+			_, _ = dao.SourceNoteImages.Ctx(ctx).Where(columns.Id, record.Id).
+				Data(do.SourceNoteImages{DownloadStatus: "downloading", FilterReason: ""}).Update()
+			assetID, parseErr := strconv.ParseInt(record.ExternalAssetId, 10, 64)
+			var data []byte
+			var err error
+			if parseErr == nil && assetID > 0 {
+				data, err = p.app.DataSources.DownloadAsset(ctx, sourceID, assetID)
+			} else {
+				data, err = p.downloadSourceImage(ctx, sourceID, record.SourceUrl)
 			}
-			data, err := imaging.NewDownloader().Download(ctx, resolved)
 			if err != nil {
 				p.failSourceImage(ctx, record.Id, err)
 				continue
@@ -208,7 +213,7 @@ func (p *Processor) prepareNoteImages(ctx context.Context, sourceID, noteID stri
 				continue
 			}
 			fileID = stored.ID
-			_, err = dao.SourceNoteImages.Ctx(ctx).Where(columns.Id, record.Id).Data(do.SourceNoteImages{FileId: stored.ID, Sha256: stored.SHA256, DownloadStatus: "downloaded"}).Update()
+			_, err = dao.SourceNoteImages.Ctx(ctx).Where(columns.Id, record.Id).Data(do.SourceNoteImages{FileId: stored.ID, Sha256: stored.SHA256, DownloadStatus: "downloaded", FilterReason: ""}).Update()
 			if err != nil {
 				return nil, err
 			}
@@ -218,23 +223,27 @@ func (p *Processor) prepareNoteImages(ctx context.Context, sourceID, noteID stri
 	return items, nil
 }
 
-func (p *Processor) sourceImageURL(ctx context.Context, sourceID, raw string) (string, error) {
+func (p *Processor) downloadSourceImage(ctx context.Context, sourceID, raw string) ([]byte, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if parsed.IsAbs() {
-		return parsed.String(), nil
+		return imaging.NewDownloader().Download(ctx, parsed.String())
 	}
 	var source entity.DataSources
 	if err = dao.DataSources.Ctx(ctx).Where(dao.DataSources.Columns().Id, sourceID).Scan(&source); err != nil {
-		return "", err
+		return nil, err
 	}
 	base, err := url.Parse(source.BaseUrl)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return base.ResolveReference(parsed).String(), nil
+	downloader, err := imaging.NewSourceDownloader(source.BaseUrl)
+	if err != nil {
+		return nil, err
+	}
+	return downloader.Download(ctx, base.ResolveReference(parsed).String())
 }
 
 func (p *Processor) failSourceImage(ctx context.Context, id string, cause error) {
