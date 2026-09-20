@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,6 +139,10 @@ func parseResponse(raw json.RawMessage) (map[string]any, error) {
 	if value, ok := root["body"].(map[string]any); ok {
 		body = value
 	}
+	// content.user_info 返回扁平用户对象；兼容旧的 network.request envelope。
+	if _, flat := body["userid"]; flat {
+		return body, nil
+	}
 	if success, exists := body["success"].(bool); exists && !success {
 		return nil, fmt.Errorf("用户资料接口失败: %s", firstString(body, "msg", "message"))
 	}
@@ -163,6 +168,9 @@ func int64Value(value any) int64 {
 	switch typed := value.(type) {
 	case float64:
 		return int64(typed)
+	case string:
+		result, _ := strconv.ParseInt(typed, 10, 64)
+		return result
 	case json.Number:
 		result, _ := typed.Int64()
 		return result

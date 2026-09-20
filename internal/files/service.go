@@ -204,6 +204,8 @@ func detectImage(path string) (string, string, error) {
 		if strings.HasPrefix(brand, "hei") || brand == "mif1" || brand == "msf1" {
 			return "image/heic", ".heic", nil
 		}
+	case len(header) >= 12 && string(header[:4]) == "RIFF" && string(header[8:12]) == "WEBP":
+		return "image/webp", ".webp", nil
 	}
 	return "", "", fmt.Errorf("仅支持 JPEG、PNG、HEIC 或 HEIF 图片")
 }
@@ -222,6 +224,8 @@ func detectImageBytes(data []byte) (string, string, error) {
 		if strings.HasPrefix(brand, "hei") || brand == "mif1" || brand == "msf1" {
 			return "image/heic", ".heic", nil
 		}
+	case len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP":
+		return "image/webp", ".webp", nil
 	}
 	return "", "", fmt.Errorf("仅支持 JPEG、PNG、HEIC 或 HEIF 图片")
 }

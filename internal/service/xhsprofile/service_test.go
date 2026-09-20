@@ -18,3 +18,11 @@ func TestParseResponseFromNetworkEnvelope(t *testing.T) {
 		t.Fatalf("fans = %d", got)
 	}
 }
+
+func TestParseResponseFromFlatUserInfoAction(t *testing.T) {
+	raw := json.RawMessage(`{"userid":"u1","red_id":"r1","nickname":"Siri","fans":"679"}`)
+	data, err := parseResponse(raw)
+	if err != nil || firstString(data, "userid") != "u1" || int64Value(data["fans"]) != 679 {
+		t.Fatalf("flat user info parse failed: data=%v err=%v", data, err)
+	}
+}
