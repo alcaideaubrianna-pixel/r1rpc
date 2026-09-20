@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"r1rpc/internal/dao"
@@ -27,8 +28,20 @@ type Enqueuer interface {
 	EnqueueSourceScan(context.Context, string, int) error
 }
 type Service struct {
-	key      [32]byte
-	enqueuer Enqueuer
+	key          [32]byte
+	enqueuer     Enqueuer
+	cacheMu      sync.Mutex
+	channelCache map[string]channelCacheEntry
+}
+type ChannelPage struct {
+	Items      []feiniu.Channel `json:"items"`
+	NextCursor string           `json:"nextCursor"`
+	HasMore    bool             `json:"hasMore"`
+	Cached     bool             `json:"cached"`
+}
+type channelCacheEntry struct {
+	page      ChannelPage
+	expiresAt time.Time
 }
 type Source struct {
 	ID               string    `json:"id"`
@@ -184,7 +197,9 @@ func (s *Service) failScan(ctx context.Context, task entity.ChannelScanTasks, ca
 	return cause
 }
 
-func New(secret string) *Service { return &Service{key: sha256.Sum256([]byte(secret))} }
+func New(secret string) *Service {
+	return &Service{key: sha256.Sum256([]byte(secret)), channelCache: make(map[string]channelCacheEntry)}
+}
 func (s *Service) List(ctx context.Context) ([]Source, error) {
 	var rows []entity.DataSources
 	if err := dao.DataSources.Ctx(ctx).OrderDesc(dao.DataSources.Columns().CreatedAt).Scan(&rows); err != nil {
@@ -250,6 +265,7 @@ func (s *Service) Update(ctx context.Context, id string, in SaveInput) (*Source,
 	if _, err := dao.DataSources.Ctx(ctx).Where(dao.DataSources.Columns().Id, id).Data(update).Update(); err != nil {
 		return nil, gerror.Wrap(err, "更新数据源失败")
 	}
+	s.clearChannelCache(id)
 	rows, err := s.List(ctx)
 	if err != nil {
 		return nil, err
@@ -261,13 +277,42 @@ func (s *Service) Update(ctx context.Context, id string, in SaveInput) (*Source,
 	}
 	return nil, gerror.New("数据源更新后读取失败")
 }
-func (s *Service) Channels(ctx context.Context, id string) ([]feiniu.Channel, error) {
+func (s *Service) Channels(ctx context.Context, id, cursor string, limit int) (*ChannelPage, error) {
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+	cacheKey := fmt.Sprintf("%s:%d:%s", id, limit, cursor)
+	s.cacheMu.Lock()
+	if cached, ok := s.channelCache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
+		page := cached.page
+		page.Cached = true
+		s.cacheMu.Unlock()
+		return &page, nil
+	}
+	s.cacheMu.Unlock()
 	client, err := s.client(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	page, err := client.Channels(ctx, 100, "", "")
-	return page.Items, err
+	page, err := client.Channels(ctx, limit, cursor, "")
+	if err != nil {
+		return nil, err
+	}
+	result := &ChannelPage{Items: page.Items, NextCursor: page.NextCursor, HasMore: page.HasMore}
+	s.cacheMu.Lock()
+	s.channelCache[cacheKey] = channelCacheEntry{page: *result, expiresAt: time.Now().Add(5 * time.Minute)}
+	s.cacheMu.Unlock()
+	return result, nil
+}
+
+func (s *Service) clearChannelCache(id string) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	for key := range s.channelCache {
+		if strings.HasPrefix(key, id+":") {
+			delete(s.channelCache, key)
+		}
+	}
 }
 func (s *Service) client(ctx context.Context, id string) (*feiniu.Client, error) {
 	var row entity.DataSources

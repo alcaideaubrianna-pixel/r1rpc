@@ -46,13 +46,14 @@ func (s *Server) registerDataSourceRoutes(mux *http.ServeMux) {
 		writeJSON(w, 200, item)
 	}))
 	mux.HandleFunc("GET /api/v1/data-sources/{id}/channels", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
-		items, err := s.App.DataSources.Channels(r.Context(), r.PathValue("id"))
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		result, err := s.App.DataSources.Channels(r.Context(), r.PathValue("id"), r.URL.Query().Get("cursor"), limit)
 		if err != nil {
 			g.Log().Errorf(r.Context(), "读取数据源频道失败 sourceId=%s err=%v", r.PathValue("id"), err)
 			writeError(w, 502, err)
 			return
 		}
-		writeJSON(w, 200, map[string]any{"items": items})
+		writeJSON(w, 200, result)
 	}))
 	mux.HandleFunc("GET /api/v1/channel-scan-tasks", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
