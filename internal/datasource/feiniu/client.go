@@ -18,8 +18,8 @@ import (
 )
 
 type Client struct {
-	BaseURL, AppID, AccessKey, SecretKey string
-	HTTPClient                           *http.Client
+	BaseURL, ImageBaseURL, AppID, AccessKey, SecretKey string
+	HTTPClient                                         *http.Client
 }
 type Timestamp struct{ time.Time }
 type StringID string

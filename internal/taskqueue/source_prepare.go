@@ -201,7 +201,8 @@ type preparedImages struct {
 func (p *Processor) prepareNoteImages(ctx context.Context, sourceID, noteID string, config entity.SearchConfigs) (preparedImages, error) {
 	columns := dao.SourceNoteImages.Columns()
 	var records []entity.SourceNoteImages
-	if err := dao.SourceNoteImages.Ctx(ctx).Where(columns.NoteId, noteID).OrderAsc(columns.ImageIndex).Scan(&records); err != nil {
+	if err := dao.SourceNoteImages.Ctx(ctx).Where(columns.NoteId, noteID).
+		WhereNot(columns.DownloadStatus, "unavailable").OrderAsc(columns.ImageIndex).Scan(&records); err != nil {
 		return preparedImages{}, err
 	}
 	result := preparedImages{Items: make([]input.ImageSearchItem, 0, len(records))}
@@ -212,6 +213,11 @@ func (p *Processor) prepareNoteImages(ctx context.Context, sourceID, noteID stri
 	processor := ocr.NewTesseract()
 	for _, record := range records {
 		fileID := record.FileId
+		if fileID != "" {
+			if _, _, readErr := p.app.Files.Read(ctx, fileID); readErr != nil {
+				fileID = ""
+			}
+		}
 		if fileID == "" {
 			_, _ = dao.SourceNoteImages.Ctx(ctx).Where(columns.Id, record.Id).
 				Data(do.SourceNoteImages{DownloadStatus: "downloading", FilterReason: ""}).Update()

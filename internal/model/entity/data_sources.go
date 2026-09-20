@@ -13,6 +13,7 @@ type DataSources struct {
 	Id                    string    `json:"id"                    orm:"id"                      ` //
 	Name                  string    `json:"name"                  orm:"name"                    ` //
 	BaseUrl               string    `json:"baseUrl"               orm:"base_url"                ` //
+	ImageBaseUrl          string    `json:"imageBaseUrl"          orm:"image_base_url"          ` //
 	AppId                 string    `json:"appId"                 orm:"app_id"                  ` //
 	AccessKey             string    `json:"accessKey"             orm:"access_key"              ` //
 	SecretKeyEncrypted    string    `json:"secretKeyEncrypted"    orm:"secret_key_encrypted"    ` //

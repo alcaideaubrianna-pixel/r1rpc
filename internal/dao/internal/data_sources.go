@@ -24,6 +24,7 @@ type DataSourcesColumns struct {
 	Id                    string //
 	Name                  string //
 	BaseUrl               string //
+	ImageBaseUrl          string //
 	AppId                 string //
 	AccessKey             string //
 	SecretKeyEncrypted    string //
@@ -38,6 +39,7 @@ var dataSourcesColumns = DataSourcesColumns{
 	Id:                    "id",
 	Name:                  "name",
 	BaseUrl:               "base_url",
+	ImageBaseUrl:          "image_base_url",
 	AppId:                 "app_id",
 	AccessKey:             "access_key",
 	SecretKeyEncrypted:    "secret_key_encrypted",

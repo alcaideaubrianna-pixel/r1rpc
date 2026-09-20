@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS data_sources (
     id CHAR(32) PRIMARY KEY,
     name VARCHAR(128) NOT NULL,
     base_url VARCHAR(512) NOT NULL,
+    image_base_url VARCHAR(512) NOT NULL DEFAULT '',
     app_id VARCHAR(128) NOT NULL,
     access_key VARCHAR(256) NOT NULL,
     secret_key_encrypted TEXT NOT NULL,

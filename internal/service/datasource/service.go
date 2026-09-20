@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -44,6 +45,7 @@ type Source struct {
 	ID               string    `json:"id"`
 	Name             string    `json:"name"`
 	BaseURL          string    `json:"baseUrl"`
+	ImageBaseURL     string    `json:"imageBaseUrl"`
 	AppID            string    `json:"appId"`
 	AccessKey        string    `json:"accessKey"`
 	Status           string    `json:"status"`
@@ -51,12 +53,13 @@ type Source struct {
 	CreatedAt        time.Time `json:"createdAt"`
 }
 type SaveInput struct {
-	Name      string `json:"name"`
-	BaseURL   string `json:"baseUrl"`
-	AppID     string `json:"appId"`
-	AccessKey string `json:"accessKey"`
-	SecretKey string `json:"secretKey"`
-	Status    string `json:"status"`
+	Name         string `json:"name"`
+	BaseURL      string `json:"baseUrl"`
+	ImageBaseURL string `json:"imageBaseUrl"`
+	AppID        string `json:"appId"`
+	AccessKey    string `json:"accessKey"`
+	SecretKey    string `json:"secretKey"`
+	Status       string `json:"status"`
 }
 type ScanTaskPage struct {
 	Items      []entity.ChannelScanTasks `json:"items"`
@@ -170,16 +173,24 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 		if _, err = dao.SourceScanTaskNotes.Ctx(ctx).Data(do.SourceScanTaskNotes{Id: guid.S(), ScanTaskId: task.Id, NoteId: saved.Id}).InsertIgnore(); err != nil {
 			return err
 		}
+		availableAssetIDs := make([]string, 0, len(note.Media))
 		for _, media := range note.Media {
-			downloadURL := media.DownloadURL()
+			downloadURL := mediaDownloadURL(media, client.ImageBaseURL)
 			if media.AssetType != "image" || downloadURL == "" {
 				continue
 			}
+			availableAssetIDs = append(availableAssetIDs, fmt.Sprint(media.AssetID))
 			mediaRaw, _ := json.Marshal(media)
-			_, err = dao.SourceNoteImages.Ctx(ctx).Data(do.SourceNoteImages{Id: guid.S(), NoteId: saved.Id, ExternalAssetId: fmt.Sprint(media.AssetID), AssetType: media.AssetType, SourceUrl: downloadURL, Phash: media.PHash, DownloadStatus: "pending", PreprocessStatus: "pending", FilterDecision: "pending", RawJson: string(mediaRaw), ImageIndex: media.Sort}).InsertIgnore()
-			if err != nil {
+			if err = saveSourceImage(ctx, saved.Id, media, downloadURL, string(mediaRaw)); err != nil {
 				return err
 			}
+		}
+		staleImages := dao.SourceNoteImages.Ctx(ctx).Where(dao.SourceNoteImages.Columns().NoteId, saved.Id)
+		if len(availableAssetIDs) > 0 {
+			staleImages = staleImages.WhereNotIn(dao.SourceNoteImages.Columns().ExternalAssetId, availableAssetIDs)
+		}
+		if _, err = staleImages.Data(do.SourceNoteImages{DownloadStatus: "unavailable", FilterReason: "OpenAPI 未返回可用 COS 地址"}).Update(); err != nil {
+			return err
 		}
 	}
 	update := do.ChannelScanTasks{
@@ -210,6 +221,36 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 	}
 	return nil
 }
+
+func saveSourceImage(ctx context.Context, noteID string, media feiniu.Media, downloadURL, rawJSON string) error {
+	columns := dao.SourceNoteImages.Columns()
+	model := dao.SourceNoteImages.Ctx(ctx).
+		Where(columns.NoteId, noteID).
+		Where(columns.ExternalAssetId, fmt.Sprint(media.AssetID))
+	var current entity.SourceNoteImages
+	if err := model.Scan(&current); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	data := do.SourceNoteImages{AssetType: media.AssetType, SourceUrl: downloadURL, Phash: media.PHash, RawJson: rawJSON, ImageIndex: media.Sort}
+	if current.Id != "" {
+		if current.DownloadStatus == "unavailable" || (current.DownloadStatus == "failed" && current.FileId == "") {
+			data.DownloadStatus = "pending"
+			data.PreprocessStatus = "pending"
+			data.FilterDecision = "pending"
+			data.FilterReason = ""
+		}
+		_, err := model.Data(data).Update()
+		return err
+	}
+	data.Id = guid.S()
+	data.NoteId = noteID
+	data.ExternalAssetId = fmt.Sprint(media.AssetID)
+	data.DownloadStatus = "pending"
+	data.PreprocessStatus = "pending"
+	data.FilterDecision = "pending"
+	_, err := dao.SourceNoteImages.Ctx(ctx).Data(data).Insert()
+	return err
+}
 func (s *Service) failScan(ctx context.Context, task entity.ChannelScanTasks, cause error) error {
 	_, _ = dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, task.Id).Data(do.ChannelScanTasks{Status: "failed", LastError: cause.Error(), NextRunAt: time.Now().Add(5 * time.Minute)}).Update()
 	return cause
@@ -223,13 +264,16 @@ func (s *Service) List(ctx context.Context) ([]Source, error) {
 	}
 	out := make([]Source, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, Source{ID: r.Id, Name: r.Name, BaseURL: r.BaseUrl, AppID: r.AppId, AccessKey: r.AccessKey, Status: r.Status, SecretConfigured: r.SecretKeyEncrypted != "", CreatedAt: r.CreatedAt})
+		out = append(out, Source{ID: r.Id, Name: r.Name, BaseURL: r.BaseUrl, ImageBaseURL: r.ImageBaseUrl, AppID: r.AppId, AccessKey: r.AccessKey, Status: r.Status, SecretConfigured: r.SecretKeyEncrypted != "", CreatedAt: r.CreatedAt})
 	}
 	return out, nil
 }
 func (s *Service) Save(ctx context.Context, in SaveInput) (*Source, error) {
 	if strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.BaseURL) == "" || strings.TrimSpace(in.AppID) == "" || strings.TrimSpace(in.AccessKey) == "" || strings.TrimSpace(in.SecretKey) == "" {
 		return nil, gerror.New("名称、Base URL、APP ID、AK、SK 均不能为空")
+	}
+	if err := validateImageBaseURL(in.ImageBaseURL); err != nil {
+		return nil, err
 	}
 	encrypted, err := s.encrypt(in.SecretKey)
 	if err != nil {
@@ -240,7 +284,7 @@ func (s *Service) Save(ctx context.Context, in SaveInput) (*Source, error) {
 	if status == "" {
 		status = "enabled"
 	}
-	_, err = dao.DataSources.Ctx(ctx).Data(do.DataSources{Id: id, Name: strings.TrimSpace(in.Name), BaseUrl: strings.TrimRight(strings.TrimSpace(in.BaseURL), "/"), AppId: strings.TrimSpace(in.AppID), AccessKey: strings.TrimSpace(in.AccessKey), SecretKeyEncrypted: encrypted, Status: status, RequestTimeoutSeconds: 30}).Insert()
+	_, err = dao.DataSources.Ctx(ctx).Data(do.DataSources{Id: id, Name: strings.TrimSpace(in.Name), BaseUrl: strings.TrimRight(strings.TrimSpace(in.BaseURL), "/"), ImageBaseUrl: normalizeBaseURL(in.ImageBaseURL), AppId: strings.TrimSpace(in.AppID), AccessKey: strings.TrimSpace(in.AccessKey), SecretKeyEncrypted: encrypted, Status: status, RequestTimeoutSeconds: 30}).Insert()
 	if err != nil {
 		return nil, gerror.Wrap(err, "保存数据源失败")
 	}
@@ -259,6 +303,9 @@ func (s *Service) Update(ctx context.Context, id string, in SaveInput) (*Source,
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.BaseURL) == "" || strings.TrimSpace(in.AppID) == "" || strings.TrimSpace(in.AccessKey) == "" {
 		return nil, gerror.New("名称、Base URL、APP ID、AK 均不能为空")
 	}
+	if err := validateImageBaseURL(in.ImageBaseURL); err != nil {
+		return nil, err
+	}
 	var current entity.DataSources
 	if err := dao.DataSources.Ctx(ctx).Where(dao.DataSources.Columns().Id, id).Scan(&current); err != nil {
 		return nil, err
@@ -270,7 +317,7 @@ func (s *Service) Update(ctx context.Context, id string, in SaveInput) (*Source,
 	if status == "" {
 		status = current.Status
 	}
-	update := do.DataSources{Name: strings.TrimSpace(in.Name), BaseUrl: strings.TrimRight(strings.TrimSpace(in.BaseURL), "/"), AppId: strings.TrimSpace(in.AppID), AccessKey: strings.TrimSpace(in.AccessKey), Status: status}
+	update := do.DataSources{Name: strings.TrimSpace(in.Name), BaseUrl: strings.TrimRight(strings.TrimSpace(in.BaseURL), "/"), ImageBaseUrl: normalizeBaseURL(in.ImageBaseURL), AppId: strings.TrimSpace(in.AppID), AccessKey: strings.TrimSpace(in.AccessKey), Status: status}
 	if strings.TrimSpace(in.SecretKey) != "" {
 		encrypted, err := s.encrypt(in.SecretKey)
 		if err != nil {
@@ -380,7 +427,30 @@ func (s *Service) client(ctx context.Context, id string) (*feiniu.Client, error)
 	if err != nil {
 		return nil, err
 	}
-	return &feiniu.Client{BaseURL: row.BaseUrl, AppID: row.AppId, AccessKey: row.AccessKey, SecretKey: secret, HTTPClient: &http.Client{Timeout: time.Duration(row.RequestTimeoutSeconds) * time.Second}}, nil
+	return &feiniu.Client{BaseURL: row.BaseUrl, ImageBaseURL: row.ImageBaseUrl, AppID: row.AppId, AccessKey: row.AccessKey, SecretKey: secret, HTTPClient: &http.Client{Timeout: time.Duration(row.RequestTimeoutSeconds) * time.Second}}, nil
+}
+
+func normalizeBaseURL(value string) string { return strings.TrimRight(strings.TrimSpace(value), "/") }
+
+func validateImageBaseURL(value string) error {
+	value = normalizeBaseURL(value)
+	if value == "" {
+		return nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return gerror.New("图片下载 Base URL 必须是完整的 HTTP 或 HTTPS 地址")
+	}
+	return nil
+}
+
+func mediaDownloadURL(media feiniu.Media, imageBaseURL string) string {
+	base := normalizeBaseURL(imageBaseURL)
+	path := strings.TrimLeft(strings.TrimSpace(media.COSPath), "/")
+	if base != "" && path != "" {
+		return base + "/" + path
+	}
+	return media.DownloadURL()
 }
 func (s *Service) encrypt(v string) (string, error) {
 	block, err := aes.NewCipher(s.key[:])

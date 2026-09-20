@@ -14,6 +14,7 @@ type DataSources struct {
 	Id                    any //
 	Name                  any //
 	BaseUrl               any //
+	ImageBaseUrl          any //
 	AppId                 any //
 	AccessKey             any //
 	SecretKeyEncrypted    any //
