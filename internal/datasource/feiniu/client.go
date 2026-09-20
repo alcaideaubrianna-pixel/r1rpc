@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gogf/gf/v2/frame/g"
 )
 
 type Client struct {
@@ -87,19 +89,35 @@ func (c *Client) request(ctx context.Context, path string, query url.Values, out
 		return err
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("FeiNiu OpenAPI HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+		preview := responsePreview(data)
+		g.Log().Errorf(ctx, "FeiNiu OpenAPI 请求失败 method=%s url=%s status=%d contentType=%q body=%q", http.MethodGet, u.String(), resp.StatusCode, resp.Header.Get("Content-Type"), preview)
+		return fmt.Errorf("FeiNiu OpenAPI HTTP %d (%s): %s", resp.StatusCode, resp.Header.Get("Content-Type"), preview)
 	}
 	var envelope struct {
 		Code int             `json:"code"`
 		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
-		return err
+		preview := responsePreview(data)
+		g.Log().Errorf(ctx, "FeiNiu OpenAPI 返回非 JSON method=%s url=%s status=%d contentType=%q body=%q err=%v", http.MethodGet, u.String(), resp.StatusCode, resp.Header.Get("Content-Type"), preview, err)
+		if strings.HasPrefix(strings.TrimSpace(string(data)), "<") {
+			return fmt.Errorf("FeiNiu OpenAPI 返回了 HTML 而非 JSON，请检查 Base URL 和网关路径（当前 URL: %s）", u.String())
+		}
+		return fmt.Errorf("FeiNiu OpenAPI 响应解析失败: %w", err)
 	}
 	if envelope.Code != 0 {
 		return fmt.Errorf("FeiNiu OpenAPI code=%d", envelope.Code)
 	}
 	return json.Unmarshal(envelope.Data, out)
+}
+
+func responsePreview(data []byte) string {
+	const max = 512
+	text := strings.TrimSpace(string(data))
+	if len(text) > max {
+		return text[:max] + "…"
+	}
+	return text
 }
 
 func (c *Client) Channels(ctx context.Context, limit int, cursor, updatedAfter string) (Page[Channel], error) {

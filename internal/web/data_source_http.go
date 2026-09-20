@@ -5,6 +5,8 @@ import (
 
 	"r1rpc/internal/auth"
 	"r1rpc/internal/service/datasource"
+
+	"github.com/gogf/gf/v2/frame/g"
 )
 
 func (s *Server) registerDataSourceRoutes(mux *http.ServeMux) {
@@ -32,6 +34,7 @@ func (s *Server) registerDataSourceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/data-sources/{id}/channels", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
 		items, err := s.App.DataSources.Channels(r.Context(), r.PathValue("id"))
 		if err != nil {
+			g.Log().Errorf(r.Context(), "读取数据源频道失败 sourceId=%s err=%v", r.PathValue("id"), err)
 			writeError(w, 502, err)
 			return
 		}
