@@ -14,9 +14,11 @@ const (
 	TaskTypeImageProcess  = "image:process:v1"
 	TaskTypeImageAnalyze  = "image:analyze:v1"
 	TaskTypeImageDownload = "image:download:v1"
+	TaskTypeSourceScan    = "source:scan:v1"
 	imageQueue            = "image"
 	analysisQueue         = "image_analysis"
 	downloadQueue         = "image_download"
+	sourceScanQueue       = "source_scan"
 )
 
 type imageJobPayload struct {
@@ -25,6 +27,9 @@ type imageJobPayload struct {
 
 type imageDownloadPayload struct {
 	ImageID string `json:"imageId"`
+}
+type sourceScanPayload struct {
+	TaskID string `json:"taskId"`
 }
 
 // Enqueuer 将图片业务任务写入 Redis，Payload 只包含数据库任务 ID。
@@ -56,6 +61,17 @@ func (e *Enqueuer) EnqueueImageDownload(ctx context.Context, imageID string) err
 	task := asynq.NewTask(TaskTypeImageDownload, payload)
 	_, err = e.client.EnqueueContext(ctx, task, asynq.Queue(downloadQueue), asynq.MaxRetry(3),
 		asynq.Timeout(90*time.Second), asynq.Unique(10*time.Minute))
+	if errors.Is(err, asynq.ErrDuplicateTask) {
+		return nil
+	}
+	return err
+}
+func (e *Enqueuer) EnqueueSourceScan(ctx context.Context, taskID string, priority int) error {
+	payload, err := json.Marshal(sourceScanPayload{TaskID: taskID})
+	if err != nil {
+		return err
+	}
+	_, err = e.client.EnqueueContext(ctx, asynq.NewTask(TaskTypeSourceScan, payload), asynq.Queue(sourceScanQueue), asynq.MaxRetry(5), asynq.Timeout(2*time.Minute), asynq.Unique(4*time.Minute))
 	if errors.Is(err, asynq.ErrDuplicateTask) {
 		return nil
 	}

@@ -43,8 +43,13 @@ func NewRuntime(application *app.App, redis asynq.RedisClientOpt, apiConcurrency
 		scanInterval:     scanInterval,
 		downloadInterval: downloadInterval,
 		server: asynq.NewServer(redis, asynq.Config{
-			Concurrency: apiConcurrency + downloadConcurrency,
-			Queues:      map[string]int{imageQueue: apiConcurrency, analysisQueue: apiConcurrency, downloadQueue: downloadConcurrency},
+			Concurrency: apiConcurrency*2 + downloadConcurrency,
+			Queues: map[string]int{
+				imageQueue:      apiConcurrency,
+				analysisQueue:   apiConcurrency,
+				sourceScanQueue: apiConcurrency,
+				downloadQueue:   downloadConcurrency,
+			},
 		}),
 	}
 }
@@ -59,6 +64,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 	mux.HandleFunc(TaskTypeImageProcess, processor.ProcessImageJob)
 	mux.HandleFunc(TaskTypeImageAnalyze, processor.ProcessImageAnalysis)
 	mux.HandleFunc(TaskTypeImageDownload, processor.ProcessImageDownload)
+	mux.HandleFunc(TaskTypeSourceScan, processor.ProcessSourceScan)
 	if err := r.server.Start(mux); err != nil {
 		return err
 	}
@@ -67,6 +73,10 @@ func (r *Runtime) Start(ctx context.Context) error {
 		return err
 	}
 	if err := r.recoverDownloads(ctx); err != nil {
+		r.server.Shutdown()
+		return err
+	}
+	if err := r.recoverSourceScans(ctx); err != nil {
 		r.server.Shutdown()
 		return err
 	}
@@ -91,8 +101,10 @@ func (r *Runtime) Close() error {
 func (r *Runtime) runScanner(ctx context.Context) {
 	apiTicker := time.NewTicker(r.scanInterval)
 	downloadTicker := time.NewTicker(r.downloadInterval)
+	sourceTicker := time.NewTicker(r.scanInterval)
 	defer apiTicker.Stop()
 	defer downloadTicker.Stop()
+	defer sourceTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -101,8 +113,29 @@ func (r *Runtime) runScanner(ctx context.Context) {
 			_ = r.recoverAPI(ctx)
 		case <-downloadTicker.C:
 			_ = r.recoverDownloads(ctx)
+		case <-sourceTicker.C:
+			_ = r.recoverSourceScans(ctx)
 		}
 	}
+}
+
+func (r *Runtime) recoverSourceScans(ctx context.Context) error {
+	columns := dao.ChannelScanTasks.Columns()
+	var tasks []entity.ChannelScanTasks
+	if err := dao.ChannelScanTasks.Ctx(ctx).
+		WhereIn(columns.Status, []string{"queued", "waiting", "failed"}).
+		WhereLTE(columns.NextRunAt, time.Now()).
+		OrderDesc(columns.Priority).OrderAsc(columns.NextRunAt).
+		Limit(500).Scan(&tasks); err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		if err := r.enqueuer.EnqueueSourceScan(ctx, task.Id, task.Priority); err != nil {
+			return err
+		}
+	}
+	g.Log().Info(ctx, g.Map{"event": "source_scan_queue_recovered", "count": len(tasks)})
+	return nil
 }
 
 func (r *Runtime) recoverAPI(ctx context.Context) error {

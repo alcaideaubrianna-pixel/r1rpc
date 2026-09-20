@@ -37,4 +37,25 @@ func (s *Server) registerDataSourceRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, 200, map[string]any{"items": items})
 	}))
+	mux.HandleFunc("GET /api/v1/channel-scan-tasks", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
+		items, err := s.App.DataSources.ListScanTasks(r.Context())
+		if err != nil {
+			writeError(w, 500, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"items": items})
+	}))
+	mux.HandleFunc("POST /api/v1/channel-scan-tasks", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
+		var input datasource.ScanTaskInput
+		if err := decodeLimitedJSON(w, r, &input); err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		item, err := s.App.DataSources.CreateScanTask(r.Context(), input)
+		if err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		writeJSON(w, 202, item)
+	}))
 }

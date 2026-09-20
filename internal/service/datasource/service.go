@@ -7,6 +7,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -21,7 +23,13 @@ import (
 	"github.com/gogf/gf/v2/util/guid"
 )
 
-type Service struct{ key [32]byte }
+type Enqueuer interface {
+	EnqueueSourceScan(context.Context, string, int) error
+}
+type Service struct {
+	key      [32]byte
+	enqueuer Enqueuer
+}
 type Source struct {
 	ID               string    `json:"id"`
 	Name             string    `json:"name"`
@@ -39,6 +47,121 @@ type SaveInput struct {
 	AccessKey string `json:"accessKey"`
 	SecretKey string `json:"secretKey"`
 	Status    string `json:"status"`
+}
+type ScanTaskInput struct {
+	DataSourceID        string `json:"dataSourceId"`
+	ChannelID           int64  `json:"channelId"`
+	ChannelTitle        string `json:"channelTitle"`
+	Mode                string `json:"mode"`
+	InitialLimit        int    `json:"initialLimit"`
+	PollIntervalMinutes int    `json:"pollIntervalMinutes"`
+	Priority            int    `json:"priority"`
+}
+
+func (s *Service) SetEnqueuer(value Enqueuer) { s.enqueuer = value }
+func (s *Service) CreateScanTask(ctx context.Context, in ScanTaskInput) (*entity.ChannelScanTasks, error) {
+	if in.DataSourceID == "" || in.ChannelID <= 0 {
+		return nil, gerror.New("数据源和频道不能为空")
+	}
+	if in.Mode != "continuous" {
+		in.Mode = "once"
+	}
+	if in.InitialLimit < 1 || in.InitialLimit > 100 {
+		in.InitialLimit = 10
+	}
+	if in.PollIntervalMinutes < 5 || in.PollIntervalMinutes > 30 {
+		in.PollIntervalMinutes = 10
+	}
+	id := guid.S()
+	_, err := dao.ChannelScanTasks.Ctx(ctx).Data(do.ChannelScanTasks{Id: id, DataSourceId: in.DataSourceID, ChannelId: in.ChannelID, ChannelTitle: in.ChannelTitle, Mode: in.Mode, InitialLimit: in.InitialLimit, PollIntervalMinutes: in.PollIntervalMinutes, Priority: in.Priority, Status: "queued", NextRunAt: time.Now()}).Insert()
+	if err != nil {
+		return nil, err
+	}
+	if s.enqueuer != nil {
+		if err = s.enqueuer.EnqueueSourceScan(ctx, id, in.Priority); err != nil {
+			return nil, err
+		}
+	}
+	var row entity.ChannelScanTasks
+	err = dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, id).Scan(&row)
+	return &row, err
+}
+func (s *Service) ListScanTasks(ctx context.Context) ([]entity.ChannelScanTasks, error) {
+	var rows []entity.ChannelScanTasks
+	err := dao.ChannelScanTasks.Ctx(ctx).OrderDesc(dao.ChannelScanTasks.Columns().CreatedAt).Limit(100).Scan(&rows)
+	return rows, err
+}
+func (s *Service) RunScan(ctx context.Context, taskID string) error {
+	var task entity.ChannelScanTasks
+	if err := dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, taskID).Scan(&task); err != nil {
+		return err
+	}
+	if task.Id == "" || task.Status == "paused" || task.Status == "cancelled" {
+		return nil
+	}
+	client, err := s.client(ctx, task.DataSourceId)
+	if err != nil {
+		return s.failScan(ctx, task, err)
+	}
+	_, _ = dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, task.Id).Data(do.ChannelScanTasks{Status: "running", LastError: ""}).Update()
+	updatedAfter := ""
+	if !task.Watermark.IsZero() {
+		updatedAfter = task.Watermark.Format(time.RFC3339)
+	}
+	page, err := client.Notes(ctx, task.ChannelId, task.InitialLimit, task.CursorValue, updatedAfter)
+	if err != nil {
+		return s.failScan(ctx, task, err)
+	}
+	for _, note := range page.Items {
+		raw, _ := json.Marshal(note)
+		attrs, _ := json.Marshal(note.Attributes)
+		noteID := guid.S()
+		_, err = dao.SourceNotes.Ctx(ctx).Data(do.SourceNotes{Id: noteID, DataSourceId: task.DataSourceId, ScanTaskId: task.Id, ChannelId: task.ChannelId, ExternalNoteId: fmt.Sprint(note.ID), NoteCode: note.NoteCode, Title: note.Title, PlainText: note.PlainText, AttributesJson: string(attrs), RawJson: string(raw), Status: "received"}).InsertIgnore()
+		if err != nil {
+			return err
+		}
+		var saved entity.SourceNotes
+		_ = dao.SourceNotes.Ctx(ctx).Where(dao.SourceNotes.Columns().DataSourceId, task.DataSourceId).Where(dao.SourceNotes.Columns().ChannelId, task.ChannelId).Where(dao.SourceNotes.Columns().ExternalNoteId, fmt.Sprint(note.ID)).Scan(&saved)
+		for _, media := range note.Media {
+			if media.AssetType != "image" || media.PreviewURI == "" {
+				continue
+			}
+			mediaRaw, _ := json.Marshal(media)
+			_, err = dao.SourceNoteImages.Ctx(ctx).Data(do.SourceNoteImages{Id: guid.S(), NoteId: saved.Id, ExternalAssetId: fmt.Sprint(media.AssetID), AssetType: media.AssetType, SourceUrl: media.PreviewURI, Phash: media.PHash, DownloadStatus: "pending", PreprocessStatus: "pending", FilterDecision: "pending", RawJson: string(mediaRaw), ImageIndex: media.Sort}).InsertIgnore()
+			if err != nil {
+				return err
+			}
+		}
+	}
+	update := do.ChannelScanTasks{
+		Status:        "completed",
+		CursorValue:   "",
+		Watermark:     page.Watermark,
+		NextRunAt:     nil,
+		LastSuccessAt: time.Now(),
+		LastError:     "",
+	}
+	shouldContinue := page.HasMore && page.NextNo != ""
+	if shouldContinue {
+		update.Status = "queued"
+		update.CursorValue = page.NextNo
+		update.Watermark = task.Watermark
+		update.NextRunAt = time.Now()
+	} else if task.Mode == "continuous" {
+		update.Status = "waiting"
+		update.NextRunAt = time.Now().Add(time.Duration(task.PollIntervalMinutes) * time.Minute)
+	}
+	if _, err = dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, task.Id).Data(update).Update(); err != nil {
+		return err
+	}
+	if shouldContinue && s.enqueuer != nil {
+		return s.enqueuer.EnqueueSourceScan(ctx, task.Id, task.Priority)
+	}
+	return nil
+}
+func (s *Service) failScan(ctx context.Context, task entity.ChannelScanTasks, cause error) error {
+	_, _ = dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, task.Id).Data(do.ChannelScanTasks{Status: "failed", LastError: cause.Error(), NextRunAt: time.Now().Add(5 * time.Minute)}).Update()
+	return cause
 }
 
 func New(secret string) *Service { return &Service{key: sha256.Sum256([]byte(secret))} }

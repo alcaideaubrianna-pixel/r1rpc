@@ -71,6 +71,7 @@ func main() {
 	)
 	application.ImageTasks.SetEnqueuer(queueRuntime.Enqueuer())
 	application.ImageSearch.SetEnqueuer(queueRuntime.Enqueuer())
+	application.DataSources.SetEnqueuer(queueRuntime.Enqueuer())
 	if err := queueRuntime.Start(runCtx); err != nil {
 		g.Log().Fatalf(context.Background(), "启动图片任务队列失败: %+v", err)
 	}
