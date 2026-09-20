@@ -156,7 +156,7 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 	update := do.ChannelScanTasks{
 		Status:        "completed",
 		CursorValue:   "",
-		Watermark:     page.Watermark,
+		Watermark:     page.Watermark.Time,
 		NextRunAt:     nil,
 		LastSuccessAt: time.Now(),
 		LastError:     "",

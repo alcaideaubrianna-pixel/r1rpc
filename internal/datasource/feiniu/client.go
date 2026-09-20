@@ -21,6 +21,24 @@ type Client struct {
 	BaseURL, AppID, AccessKey, SecretKey string
 	HTTPClient                           *http.Client
 }
+type Timestamp struct{ time.Time }
+
+func (t *Timestamp) UnmarshalJSON(data []byte) error {
+	value := strings.Trim(string(data), `"`)
+	if value == "" || value == "null" {
+		t.Time = time.Time{}
+		return nil
+	}
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05.999999999"} {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			t.Time = parsed
+			return nil
+		}
+	}
+	return fmt.Errorf("不支持的 FeiNiu 时间格式 %q", value)
+}
+
 type Channel struct {
 	ID       int64  `json:"channel_id"`
 	Title    string `json:"title"`
@@ -43,15 +61,15 @@ type Note struct {
 	PlainText       *string        `json:"plain_text"`
 	Attributes      map[string]any `json:"attributes"`
 	Media           []Media        `json:"media"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
+	CreatedAt       Timestamp      `json:"created_at"`
+	UpdatedAt       Timestamp      `json:"updated_at"`
 }
 type Page[T any] struct {
 	Items      []T       `json:"items"`
 	NextCursor string    `json:"next_cursor"`
 	NextNo     string    `json:"next_no"`
 	HasMore    bool      `json:"has_more"`
-	Watermark  time.Time `json:"watermark"`
+	Watermark  Timestamp `json:"watermark"`
 }
 
 func (c *Client) request(ctx context.Context, path string, query url.Values, out any) error {
