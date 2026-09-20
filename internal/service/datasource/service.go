@@ -48,6 +48,13 @@ type SaveInput struct {
 	SecretKey string `json:"secretKey"`
 	Status    string `json:"status"`
 }
+type ScanTaskPage struct {
+	Items      []entity.ChannelScanTasks `json:"items"`
+	Page       int                       `json:"page"`
+	PageSize   int                       `json:"pageSize"`
+	Total      int64                     `json:"total"`
+	TotalPages int                       `json:"totalPages"`
+}
 type ScanTaskInput struct {
 	DataSourceID        string `json:"dataSourceId"`
 	ChannelID           int64  `json:"channelId"`
@@ -86,10 +93,23 @@ func (s *Service) CreateScanTask(ctx context.Context, in ScanTaskInput) (*entity
 	err = dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, id).Scan(&row)
 	return &row, err
 }
-func (s *Service) ListScanTasks(ctx context.Context) ([]entity.ChannelScanTasks, error) {
+func (s *Service) ListScanTasks(ctx context.Context, page, pageSize int) (*ScanTaskPage, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 10
+	}
+	model := dao.ChannelScanTasks.Ctx(ctx)
+	total, err := model.Count()
+	if err != nil {
+		return nil, err
+	}
 	var rows []entity.ChannelScanTasks
-	err := dao.ChannelScanTasks.Ctx(ctx).OrderDesc(dao.ChannelScanTasks.Columns().CreatedAt).Limit(100).Scan(&rows)
-	return rows, err
+	if err = model.OrderDesc(dao.ChannelScanTasks.Columns().CreatedAt).Page(page, pageSize).Scan(&rows); err != nil {
+		return nil, err
+	}
+	return &ScanTaskPage{Items: rows, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
 }
 func (s *Service) RunScan(ctx context.Context, taskID string) error {
 	var task entity.ChannelScanTasks
@@ -203,6 +223,43 @@ func (s *Service) Save(ctx context.Context, in SaveInput) (*Source, error) {
 		}
 	}
 	return nil, gerror.New("数据源保存后读取失败")
+}
+func (s *Service) Update(ctx context.Context, id string, in SaveInput) (*Source, error) {
+	if strings.TrimSpace(id) == "" || strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.BaseURL) == "" || strings.TrimSpace(in.AppID) == "" || strings.TrimSpace(in.AccessKey) == "" {
+		return nil, gerror.New("名称、Base URL、APP ID、AK 均不能为空")
+	}
+	var current entity.DataSources
+	if err := dao.DataSources.Ctx(ctx).Where(dao.DataSources.Columns().Id, id).Scan(&current); err != nil {
+		return nil, err
+	}
+	if current.Id == "" {
+		return nil, gerror.New("数据源不存在")
+	}
+	status := in.Status
+	if status == "" {
+		status = current.Status
+	}
+	update := do.DataSources{Name: strings.TrimSpace(in.Name), BaseUrl: strings.TrimRight(strings.TrimSpace(in.BaseURL), "/"), AppId: strings.TrimSpace(in.AppID), AccessKey: strings.TrimSpace(in.AccessKey), Status: status}
+	if strings.TrimSpace(in.SecretKey) != "" {
+		encrypted, err := s.encrypt(in.SecretKey)
+		if err != nil {
+			return nil, err
+		}
+		update.SecretKeyEncrypted = encrypted
+	}
+	if _, err := dao.DataSources.Ctx(ctx).Where(dao.DataSources.Columns().Id, id).Data(update).Update(); err != nil {
+		return nil, gerror.Wrap(err, "更新数据源失败")
+	}
+	rows, err := s.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range rows {
+		if item.ID == id {
+			return &item, nil
+		}
+	}
+	return nil, gerror.New("数据源更新后读取失败")
 }
 func (s *Service) Channels(ctx context.Context, id string) ([]feiniu.Channel, error) {
 	client, err := s.client(ctx, id)
