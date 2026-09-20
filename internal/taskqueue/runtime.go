@@ -62,7 +62,11 @@ func (r *Runtime) Start(ctx context.Context) error {
 	if err := r.server.Start(mux); err != nil {
 		return err
 	}
-	if err := r.recoverPending(ctx); err != nil {
+	if err := r.recoverAPI(ctx); err != nil {
+		r.server.Shutdown()
+		return err
+	}
+	if err := r.recoverDownloads(ctx); err != nil {
 		r.server.Shutdown()
 		return err
 	}
@@ -94,14 +98,14 @@ func (r *Runtime) runScanner(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-apiTicker.C:
-			_ = r.recoverPending(ctx)
+			_ = r.recoverAPI(ctx)
 		case <-downloadTicker.C:
-			_ = r.recoverPending(ctx)
+			_ = r.recoverDownloads(ctx)
 		}
 	}
 }
 
-func (r *Runtime) recoverPending(ctx context.Context) error {
+func (r *Runtime) recoverAPI(ctx context.Context) error {
 	columns := dao.ImageJobs.Columns()
 	var jobs []entity.ImageJobs
 	if err := dao.ImageJobs.Ctx(ctx).
@@ -132,6 +136,11 @@ func (r *Runtime) recoverPending(ctx context.Context) error {
 			return err
 		}
 	}
+	g.Log().Info(ctx, g.Map{"event": "image_api_queue_recovered", "count": len(jobs), "analysis_count": len(analysisJobs)})
+	return nil
+}
+
+func (r *Runtime) recoverDownloads(ctx context.Context) error {
 	imageColumns := dao.ImageCandidateImages.Columns()
 	var pendingImages []entity.ImageCandidateImages
 	if err := dao.ImageCandidateImages.Ctx(ctx).
@@ -146,8 +155,6 @@ func (r *Runtime) recoverPending(ctx context.Context) error {
 		_, _ = dao.ImageCandidateImages.Ctx(ctx).Where(imageColumns.Id, image.Id).
 			Data(do.ImageCandidateImages{DownloadStatus: "queued"}).Update()
 	}
-	g.Log().Info(ctx, g.Map{"event": "image_queue_recovered", "count": len(jobs)})
-	g.Log().Info(ctx, g.Map{"event": "image_analysis_queue_recovered", "count": len(analysisJobs)})
 	g.Log().Info(ctx, g.Map{"event": "image_download_queue_recovered", "count": len(pendingImages)})
 	return nil
 }

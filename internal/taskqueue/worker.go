@@ -36,7 +36,7 @@ func (p *Processor) ProcessImageJob(ctx context.Context, task *asynq.Task) error
 	if err != nil {
 		return err
 	}
-	if job.Status == "completed" || job.Status == "failed" || job.Status == "cancelled" {
+	if job.Status == "completed" || job.Status == "failed" || job.Status == "cancelled" || job.Status == "paused" {
 		return nil
 	}
 	if job.Source == "image_search" && (job.Stage == "response_received" || job.Stage == "analyzing") {

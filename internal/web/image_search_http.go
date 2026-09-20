@@ -73,6 +73,41 @@ func (s *Server) registerImageSearchRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusAccepted, res)
 	}))
+	mux.HandleFunc("POST /api/v1/image-search/requests/{id}/cancel", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
+		if err := s.App.ImageSearch.SetRequestState(r.Context(), r.PathValue("id"), "cancelled"); err != nil {
+			writeImageSearchError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "cancelled"})
+	}))
+	mux.HandleFunc("POST /api/v1/image-search/requests/{id}/pause", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
+		if err := s.App.ImageSearch.SetRequestState(r.Context(), r.PathValue("id"), "paused"); err != nil {
+			writeImageSearchError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "paused"})
+	}))
+	mux.HandleFunc("POST /api/v1/image-search/requests/{id}/resume", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
+		if err := s.App.ImageSearch.SetRequestState(r.Context(), r.PathValue("id"), "running"); err != nil {
+			writeImageSearchError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "running"})
+	}))
+	mux.HandleFunc("PATCH /api/v1/image-search/requests/{id}/priority", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
+		var body struct {
+			Priority int `json:"priority"`
+		}
+		if err := decodeLimitedJSON(w, r, &body); err != nil {
+			writeImageSearchError(w, err)
+			return
+		}
+		if err := s.App.ImageSearch.SetPriority(r.Context(), r.PathValue("id"), body.Priority); err != nil {
+			writeImageSearchError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]int{"priority": body.Priority})
+	}))
 	mux.HandleFunc("GET /api/v1/image-search/requests", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, claims *auth.Claims) {
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		pageSize, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))

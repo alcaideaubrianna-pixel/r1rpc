@@ -44,7 +44,7 @@ func (p *Processor) ProcessImageAnalysis(ctx context.Context, task *asynq.Task) 
 	if err != nil {
 		return err
 	}
-	if job.Status == "completed" || job.Status == "failed" || job.Status == "cancelled" {
+	if job.Status == "completed" || job.Status == "failed" || job.Status == "cancelled" || job.Status == "paused" {
 		return nil
 	}
 	if _, err := dao.ImageJobs.Ctx(ctx).Where(dao.ImageJobs.Columns().Id, job.Id).
