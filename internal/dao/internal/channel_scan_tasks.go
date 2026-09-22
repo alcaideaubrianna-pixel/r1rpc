@@ -40,6 +40,8 @@ type ChannelScanTasksColumns struct {
 	CreatedAt            string //
 	UpdatedAt            string //
 	SearchTaskId         string //
+	FetchedCount         string //
+	SkippedCount         string //
 }
 
 // channelScanTasksColumns holds the columns for the table channel_scan_tasks.
@@ -63,6 +65,8 @@ var channelScanTasksColumns = ChannelScanTasksColumns{
 	CreatedAt:            "created_at",
 	UpdatedAt:            "updated_at",
 	SearchTaskId:         "search_task_id",
+	FetchedCount:         "fetched_count",
+	SkippedCount:         "skipped_count",
 }
 
 // NewChannelScanTasksDao creates and returns a new DAO object for table data access.

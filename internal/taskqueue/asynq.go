@@ -20,6 +20,7 @@ const (
 	analysisQueue         = "image_analysis"
 	downloadQueue         = "image_download"
 	sourceScanQueue       = "source_scan"
+	sourcePrepareQueue    = "source_prepare"
 )
 
 type imageJobPayload struct {
@@ -60,7 +61,7 @@ func (e *Enqueuer) EnqueueImageDownload(ctx context.Context, imageID string) err
 		return err
 	}
 	task := asynq.NewTask(TaskTypeImageDownload, payload)
-	_, err = e.client.EnqueueContext(ctx, task, asynq.Queue(downloadQueue), asynq.MaxRetry(3),
+	_, err = e.client.EnqueueContext(ctx, task, asynq.Queue(downloadQueue), asynq.MaxRetry(5),
 		asynq.Timeout(90*time.Second), asynq.Unique(10*time.Minute))
 	if errors.Is(err, asynq.ErrDuplicateTask) {
 		return nil
@@ -84,7 +85,7 @@ func (e *Enqueuer) EnqueueSourcePrepare(ctx context.Context, taskID string) erro
 	if err != nil {
 		return err
 	}
-	_, err = e.client.EnqueueContext(ctx, asynq.NewTask(TaskTypeSourcePrepare, payload), asynq.Queue(downloadQueue), asynq.MaxRetry(5), asynq.Timeout(20*time.Minute), asynq.Unique(10*time.Minute))
+	_, err = e.client.EnqueueContext(ctx, asynq.NewTask(TaskTypeSourcePrepare, payload), asynq.Queue(sourcePrepareQueue), asynq.MaxRetry(5), asynq.Timeout(20*time.Minute), asynq.Unique(10*time.Minute))
 	if errors.Is(err, asynq.ErrDuplicateTask) {
 		return nil
 	}

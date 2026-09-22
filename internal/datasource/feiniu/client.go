@@ -103,6 +103,16 @@ func (m Media) DownloadURL() string {
 	return ""
 }
 
+// PreviewDownloadURL 仅返回媒体预览图地址，视频不得使用原始 content_url。
+func (m Media) PreviewDownloadURL() string {
+	for _, value := range []string{m.PreviewURL, m.PreviewURI} {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 type Note struct {
 	ID              int64          `json:"note_id"`
 	NoteCode        string         `json:"note_code"`

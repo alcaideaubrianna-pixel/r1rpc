@@ -25,6 +25,16 @@ func TestMediaDownloadURLFallsBackWithoutCOSPath(t *testing.T) {
 	}
 }
 
+func TestVideoUsesPreviewOnly(t *testing.T) {
+	media := feiniu.Media{AssetType: "video", ContentURL: "https://cdn.example/video.mp4", PreviewURL: "https://cdn.example/video.poster.jpg"}
+	if got := media.PreviewDownloadURL(); got != media.PreviewURL {
+		t.Fatalf("PreviewDownloadURL() = %q, want %q", got, media.PreviewURL)
+	}
+	if got := media.DownloadURL(); got != media.ContentURL {
+		t.Fatalf("DownloadURL() = %q, want content URL for generic media", got)
+	}
+}
+
 func TestValidateImageBaseURL(t *testing.T) {
 	for _, value := range []string{"", "http://cos.internal:8080", "https://cdn.example.com/path"} {
 		if err := validateImageBaseURL(value); err != nil {

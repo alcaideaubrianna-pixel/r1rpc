@@ -47,6 +47,10 @@ func (p *Processor) ProcessImageAnalysis(ctx context.Context, task *asynq.Task) 
 	if job.Status == "completed" || job.Status == "failed" || job.Status == "cancelled" || job.Status == "paused" {
 		return nil
 	}
+	// 重新搜索会清理旧响应；忽略 Redis 中尚未消费的旧分析消息。
+	if job.Stage != "response_received" && job.Stage != "analyzing" {
+		return nil
+	}
 	if _, err := dao.ImageJobs.Ctx(ctx).Where(dao.ImageJobs.Columns().Id, job.Id).
 		Data(do.ImageJobs{Status: "running", Stage: "analyzing"}).Update(); err != nil {
 		return err
@@ -85,7 +89,8 @@ func (p *Processor) enqueueCandidateDownloads(ctx context.Context, jobID string)
 	columns := dao.ImageCandidateImages.Columns()
 	var images []entity.ImageCandidateImages
 	if err := dao.ImageCandidateImages.Ctx(ctx).WhereIn(columns.CandidateId, ids).
-		WhereIn(columns.DownloadStatus, []string{"pending", "queued"}).Scan(&images); err != nil {
+		WhereIn(columns.DownloadStatus, []string{"pending", "queued"}).
+		OrderAsc(columns.ImageIndex).OrderAsc(columns.CreatedAt).Scan(&images); err != nil {
 		return gerror.Wrap(err, "读取候选图片下载任务失败")
 	}
 	for _, image := range images {

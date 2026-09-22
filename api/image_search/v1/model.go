@@ -46,46 +46,60 @@ type ItemSummary struct {
 	FileURL      string `json:"fileUrl"`
 	Ordinal      int    `json:"ordinal"`
 	Status       string `json:"status"`
+	JobID        string `json:"jobId,omitempty"`
 	ErrorCode    string `json:"errorCode,omitempty"`
 	ErrorMessage string `json:"errorMessage,omitempty"`
 }
 
+type SourceImageSummary struct {
+	ID               string `json:"id"`
+	GroupID          string `json:"groupId"`
+	SearchItemID     string `json:"searchItemId,omitempty"`
+	FileID           string `json:"fileId,omitempty"`
+	FileURL          string `json:"fileUrl,omitempty"`
+	ImageIndex       int    `json:"imageIndex"`
+	DownloadStatus   string `json:"downloadStatus"`
+	PreprocessStatus string `json:"preprocessStatus,omitempty"`
+	FilterDecision   string `json:"filterDecision,omitempty"`
+	FilterReason     string `json:"filterReason,omitempty"`
+}
+
 type CandidateSummary struct {
-	ID               string  `json:"id"`
-	SearchItemID     string  `json:"searchItemId"`
-	Rank             int     `json:"rank"`
-	ContentID        string  `json:"contentId"`
-	Title            string  `json:"title,omitempty"`
-	AuthorID         string  `json:"authorId,omitempty"`
-	AuthorName       string  `json:"authorName,omitempty"`
-	CoverURL         string  `json:"coverUrl,omitempty"`
-	ImageFileID      string  `json:"imageFileId,omitempty"`
-	ImageURL         string  `json:"imageUrl,omitempty"`
-	DownloadStatus   string  `json:"downloadStatus"`
-	ErrorMessage     string  `json:"errorMessage,omitempty"`
-	AlgorithmVersion string  `json:"algorithmVersion,omitempty"`
-	PHashDistance    *int    `json:"phashDistance,omitempty"`
-	DHashDistance    *int    `json:"dhashDistance,omitempty"`
-	AHashDistance    *int    `json:"ahashDistance,omitempty"`
-	Score            float64 `json:"score"`
-	Matched          bool    `json:"matched"`
-	ImageCount       int     `json:"imageCount"`
-	AnalyzedImages   int     `json:"analyzedImages"`
-	FailedImages     int     `json:"failedImages"`
+	ID               string                  `json:"id"`
+	SearchItemID     string                  `json:"searchItemId"`
+	Rank             int                     `json:"rank"`
+	ContentID        string                  `json:"contentId"`
+	Title            string                  `json:"title,omitempty"`
+	AuthorID         string                  `json:"authorId,omitempty"`
+	AuthorName       string                  `json:"authorName,omitempty"`
+	CoverURL         string                  `json:"coverUrl,omitempty"`
+	ImageFileID      string                  `json:"imageFileId,omitempty"`
+	ImageURL         string                  `json:"imageUrl,omitempty"`
+	DownloadStatus   string                  `json:"downloadStatus"`
+	ErrorMessage     string                  `json:"errorMessage,omitempty"`
+	AlgorithmVersion string                  `json:"algorithmVersion,omitempty"`
+	PHashDistance    *int                    `json:"phashDistance,omitempty"`
+	DHashDistance    *int                    `json:"dhashDistance,omitempty"`
+	AHashDistance    *int                    `json:"ahashDistance,omitempty"`
+	Score            float64                 `json:"score"`
+	Matched          bool                    `json:"matched"`
+	ImageCount       int                     `json:"imageCount"`
+	AnalyzedImages   int                     `json:"analyzedImages"`
+	FailedImages     int                     `json:"failedImages"`
 	Images           []CandidateImageSummary `json:"images"`
 }
 
 type CandidateImageSummary struct {
-	ImageIndex int `json:"imageIndex"`
-	ImageFileID string `json:"imageFileId,omitempty"`
-	ImageURL string `json:"imageUrl,omitempty"`
-	DownloadStatus string `json:"downloadStatus"`
-	ErrorMessage string `json:"errorMessage,omitempty"`
-	Score float64 `json:"score"`
-	Matched bool `json:"matched"`
-	PHashDistance *int `json:"phashDistance,omitempty"`
-	DHashDistance *int `json:"dhashDistance,omitempty"`
-	AHashDistance *int `json:"ahashDistance,omitempty"`
+	ImageIndex     int     `json:"imageIndex"`
+	ImageFileID    string  `json:"imageFileId,omitempty"`
+	ImageURL       string  `json:"imageUrl,omitempty"`
+	DownloadStatus string  `json:"downloadStatus"`
+	ErrorMessage   string  `json:"errorMessage,omitempty"`
+	Score          float64 `json:"score"`
+	Matched        bool    `json:"matched"`
+	PHashDistance  *int    `json:"phashDistance,omitempty"`
+	DHashDistance  *int    `json:"dhashDistance,omitempty"`
+	AHashDistance  *int    `json:"ahashDistance,omitempty"`
 }
 
 type ResponseSummary struct {

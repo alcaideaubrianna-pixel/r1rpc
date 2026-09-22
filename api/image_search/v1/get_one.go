@@ -8,7 +8,8 @@ type GetOneReq struct {
 }
 
 type GetOneRes struct {
-	Request RequestSummary `json:"request"`
-	Groups  []GroupSummary `json:"groups"`
-	Items   []ItemSummary  `json:"items"`
+	Request      RequestSummary       `json:"request"`
+	Groups       []GroupSummary       `json:"groups"`
+	Items        []ItemSummary        `json:"items"`
+	SourceImages []SourceImageSummary `json:"sourceImages"`
 }

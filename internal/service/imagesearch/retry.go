@@ -42,8 +42,12 @@ func (s *Service) RetryAnalysis(ctx context.Context, requestID string) error {
 		return err
 	}
 	for _, jobID := range jobIDs {
-		if err := enqueuer.EnqueueImageAnalysis(ctx, jobID); err != nil {
-			return gerror.Wrap(err, "重新投递图片分析任务失败")
+		var job entity.ImageJobs
+		if err := dao.ImageJobs.Ctx(ctx).Where(dao.ImageJobs.Columns().Id, jobID).Scan(&job); err != nil {
+			return gerror.Wrap(err, "读取待重试设备任务失败")
+		}
+		if err := enqueuer.EnqueueImageJob(ctx, jobID, job.Priority); err != nil {
+			return gerror.Wrap(err, "重新投递图片搜索任务失败")
 		}
 	}
 	return nil
@@ -66,45 +70,48 @@ func resetAnalysisRecords(ctx context.Context, requestID string, groups []output
 				WhereIn(dao.ImageMatches.Columns().CandidateId, candidateIDs).Delete(); err != nil {
 				return gerror.Wrap(err, "清理旧图片评分失败")
 			}
-			if _, err := tx.Model(dao.ImageCandidates.Table()).Ctx(ctx).
-				WhereIn(candidateColumns.Id, candidateIDs).Data(do.ImageCandidates{
-				DownloadStatus: "pending", Score: gdb.Raw("NULL"), Matched: false, ErrorMessage: "",
-			}).Update(); err != nil {
-				return gerror.Wrap(err, "重置图片候选失败")
-			}
 			imageColumns := dao.ImageCandidateImages.Columns()
 			if _, err := tx.Model(dao.ImageCandidateImages.Table()).Ctx(ctx).
-				WhereIn(imageColumns.CandidateId, candidateIDs).Data(do.ImageCandidateImages{
-				DownloadStatus: "pending", Score: gdb.Raw("NULL"), Matched: false, ErrorMessage: "",
-			}).Update(); err != nil {
-				return gerror.Wrap(err, "重置候选图片明细失败")
+				WhereIn(imageColumns.CandidateId, candidateIDs).Delete(); err != nil {
+				return gerror.Wrap(err, "清理旧候选图片明细失败")
+			}
+			if _, err := tx.Model(dao.ImageCandidates.Table()).Ctx(ctx).
+				WhereIn(candidateColumns.Id, candidateIDs).Delete(); err != nil {
+				return gerror.Wrap(err, "清理旧图片候选失败")
 			}
 		}
 		jobColumns := dao.ImageJobs.Columns()
 		if _, err := tx.Model(dao.ImageJobs.Table()).Ctx(ctx).WhereIn(jobColumns.Id, jobIDs).
-			Data(do.ImageJobs{Status: "running", Stage: "response_received", ErrorCode: "", ErrorMessage: ""}).Update(); err != nil {
+			Data(do.ImageJobs{
+				Status: "queued", Stage: "queued", AssignedClientId: "", AssignedSessionIncarnation: "",
+				UploadRequestId: "", SearchRequestId: "", UploadHandle: "", NormalizedResponseJson: "",
+				ErrorCode: "", ErrorMessage: "", FinishedAt: gdb.Raw("NULL"),
+			}).Update(); err != nil {
 			return gerror.Wrap(err, "重置图片任务失败")
 		}
 		itemColumns := dao.ImageSearchItems.Columns()
 		if _, err := tx.Model(dao.ImageSearchItems.Table()).Ctx(ctx).WhereIn(itemColumns.JobId, jobIDs).
-			Data(do.ImageSearchItems{Status: "analyzing", ErrorCode: "", ErrorMessage: ""}).Update(); err != nil {
+			Data(do.ImageSearchItems{Status: "queued", ErrorCode: "", ErrorMessage: "", FinishedAt: gdb.Raw("NULL")}).Update(); err != nil {
 			return gerror.Wrap(err, "重置图片检索项失败")
 		}
-		responseColumns := dao.ImageSearchResponses.Columns()
-		if _, err := tx.Model(dao.ImageSearchResponses.Table()).Ctx(ctx).WhereIn(responseColumns.JobId, jobIDs).
-			Data(do.ImageSearchResponses{ParseStatus: "parsed", ErrorMessage: ""}).Update(); err != nil {
-			return gerror.Wrap(err, "重置图片搜索响应失败")
+		if _, err := tx.Model(dao.ImageSearchResponses.Table()).Ctx(ctx).
+			WhereIn(dao.ImageSearchResponses.Columns().JobId, jobIDs).Delete(); err != nil {
+			return gerror.Wrap(err, "清理旧图片搜索响应失败")
 		}
 		groupColumns := dao.ImageSearchGroups.Columns()
 		for _, group := range groups {
 			if _, err := tx.Model(dao.ImageSearchGroups.Table()).Ctx(ctx).Where(groupColumns.Id, group.ID).
-				Data(do.ImageSearchGroups{Status: "running", BestMatchId: "", BestScore: gdb.Raw("NULL")}).Update(); err != nil {
+				Data(do.ImageSearchGroups{
+					Status: "queued", QueuedCount: group.ItemCount, RunningCount: 0, CompletedCount: 0,
+					FailedCount: 0, CancelledCount: 0, BestMatchId: "", BestScore: gdb.Raw("NULL"),
+					MatchedAt: gdb.Raw("NULL"), FinishedAt: gdb.Raw("NULL"),
+				}).Update(); err != nil {
 				return err
 			}
 		}
 		_, err := tx.Model(dao.ImageSearchRequests.Table()).Ctx(ctx).
 			Where(dao.ImageSearchRequests.Columns().Id, requestID).
-			Data(do.ImageSearchRequests{Status: "running", MatchedCount: 0, NotMatchedCount: 0, FailedCount: 0}).Update()
+			Data(do.ImageSearchRequests{Status: "queued", MatchedCount: 0, NotMatchedCount: 0, RunningCount: len(groups), FailedCount: 0, FinishedAt: gdb.Raw("NULL")}).Update()
 		return gerror.Wrap(err, "重置图片检索请求失败")
 	})
 }

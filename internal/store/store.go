@@ -126,6 +126,9 @@ func ensureColumns(ctx context.Context, db *sql.DB, schema string) error {
 		{Table: "channel_scan_tasks", Name: "image_search_request_id", Def: "CHAR(32) NOT NULL DEFAULT ''"},
 		{Table: "channel_scan_tasks", Name: "search_task_id", Def: "CHAR(32) NOT NULL DEFAULT ''"},
 		{Table: "channel_scan_tasks", Name: "search_config_id", Def: "CHAR(32) NOT NULL DEFAULT ''"},
+		{Table: "channel_scan_tasks", Name: "fetched_count", Def: "INT NOT NULL DEFAULT 0"},
+		{Table: "channel_scan_tasks", Name: "skipped_count", Def: "INT NOT NULL DEFAULT 0"},
+		{Table: "source_channels", Name: "is_pinned", Def: "TINYINT(1) NOT NULL DEFAULT 0"},
 		{Table: "search_tasks", Name: "error_message", Def: "VARCHAR(1024) NOT NULL DEFAULT ''"},
 	}
 	for _, c := range columns {
@@ -185,6 +188,7 @@ func ensureIndexes(ctx context.Context, db *sql.DB, schema string) error {
 		{Table: "rpc_requests", Name: "idx_rpc_requests_client_created", Cols: "client_id, created_at"},
 		{Table: "rpc_requests", Name: "idx_rpc_requests_action_created", Cols: "action_name, created_at"},
 		{Table: "rpc_requests", Name: "idx_rpc_requests_created_group_action", Cols: "created_at, group_name, action_name"},
+		{Table: "source_channels", Name: "idx_source_channels_source_pinned_title", Cols: "data_source_id, is_pinned, title"},
 	}
 	for _, item := range indexes {
 		exists, err := indexExists(ctx, db, schema, item.Table, item.Name)

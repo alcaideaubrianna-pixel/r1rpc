@@ -45,6 +45,13 @@ func (s *Server) registerDataSourceRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, 200, item)
 	}))
+	mux.HandleFunc("DELETE /api/v1/data-sources/{id}", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
+		if err := s.App.DataSources.Delete(r.Context(), r.PathValue("id")); err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"deleted": true})
+	}))
 	mux.HandleFunc("POST /api/v1/data-sources/{id}/channels/sync", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
 		count, err := s.App.DataSources.SyncChannels(r.Context(), r.PathValue("id"))
 		if err != nil {
@@ -53,6 +60,20 @@ func (s *Server) registerDataSourceRoutes(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, 200, map[string]any{"syncedCount": count})
+	}))
+	mux.HandleFunc("GET /api/v1/data-sources/{id}/channels/{channelId}/notes/preview", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
+		channelID, err := strconv.ParseInt(r.PathValue("channelId"), 10, 64)
+		if err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		result, err := s.App.DataSources.PreviewNotes(r.Context(), r.PathValue("id"), channelID, limit, r.URL.Query().Get("nextNo"))
+		if err != nil {
+			writeError(w, 502, err)
+			return
+		}
+		writeJSON(w, 200, result)
 	}))
 	mux.HandleFunc("GET /api/v1/source-channels", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
@@ -63,6 +84,20 @@ func (s *Server) registerDataSourceRoutes(mux *http.ServeMux) {
 			return
 		}
 		writeJSON(w, 200, result)
+	}))
+	mux.HandleFunc("PATCH /api/v1/source-channels/{id}/pin", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
+		var input struct {
+			Pinned bool `json:"pinned"`
+		}
+		if err := decodeLimitedJSON(w, r, &input); err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		if err := s.App.DataSources.SetChannelPinned(r.Context(), r.PathValue("id"), input.Pinned); err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"pinned": input.Pinned})
 	}))
 	mux.HandleFunc("GET /api/v1/channel-scan-tasks", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))

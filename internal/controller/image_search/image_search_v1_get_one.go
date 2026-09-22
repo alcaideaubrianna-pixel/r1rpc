@@ -25,8 +25,17 @@ func (c *ControllerV1) GetOne(ctx context.Context, req *v1.GetOneReq) (res *v1.G
 	for _, item := range result.Items {
 		items = append(items, v1.ItemSummary{
 			ID: item.ID, GroupID: item.GroupID, FileID: item.FileID, FileURL: item.FileURL, Ordinal: item.Ordinal,
-			Status: item.Status, ErrorCode: item.ErrorCode, ErrorMessage: item.ErrorMessage,
+			Status: item.Status, JobID: item.JobID, ErrorCode: item.ErrorCode, ErrorMessage: item.ErrorMessage,
 		})
 	}
-	return &v1.GetOneRes{Request: toRequestSummary(*result), Groups: groups, Items: items}, nil
+	sourceImages := make([]v1.SourceImageSummary, 0, len(result.SourceImages))
+	for _, image := range result.SourceImages {
+		sourceImages = append(sourceImages, v1.SourceImageSummary{
+			ID: image.ID, GroupID: image.GroupID, SearchItemID: image.SearchItemID,
+			FileID: image.FileID, FileURL: image.FileURL, ImageIndex: image.ImageIndex,
+			DownloadStatus: image.DownloadStatus, PreprocessStatus: image.PreprocessStatus,
+			FilterDecision: image.FilterDecision, FilterReason: image.FilterReason,
+		})
+	}
+	return &v1.GetOneRes{Request: toRequestSummary(*result), Groups: groups, Items: items, SourceImages: sourceImages}, nil
 }

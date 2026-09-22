@@ -30,4 +30,6 @@ type ChannelScanTasks struct {
 	CreatedAt            any //
 	UpdatedAt            any //
 	SearchTaskId         any //
+	FetchedCount         any //
+	SkippedCount         any //
 }

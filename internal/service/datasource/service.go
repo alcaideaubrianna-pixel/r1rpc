@@ -22,6 +22,7 @@ import (
 	"r1rpc/internal/model/do"
 	"r1rpc/internal/model/entity"
 
+	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/errors/gerror"
 	"github.com/gogf/gf/v2/util/guid"
 )
@@ -62,11 +63,16 @@ type SaveInput struct {
 	Status       string `json:"status"`
 }
 type ScanTaskPage struct {
-	Items      []entity.ChannelScanTasks `json:"items"`
-	Page       int                       `json:"page"`
-	PageSize   int                       `json:"pageSize"`
-	Total      int64                     `json:"total"`
-	TotalPages int                       `json:"totalPages"`
+	Items      []ScanTask `json:"items"`
+	Page       int        `json:"page"`
+	PageSize   int        `json:"pageSize"`
+	Total      int64      `json:"total"`
+	TotalPages int        `json:"totalPages"`
+}
+type ScanTask struct {
+	entity.ChannelScanTasks
+	CompletedCount  int `json:"completedCount"`
+	ProgressPercent int `json:"progressPercent"`
 }
 type ScanTaskInput struct {
 	DataSourceID        string `json:"dataSourceId"`
@@ -86,6 +92,20 @@ func (s *Service) DownloadAsset(ctx context.Context, sourceID string, assetID in
 		return nil, err
 	}
 	return client.DownloadAsset(ctx, assetID)
+}
+
+func (s *Service) PreviewNotes(ctx context.Context, sourceID string, channelID int64, limit int, nextNo string) (feiniu.Page[feiniu.Note], error) {
+	if channelID <= 0 {
+		return feiniu.Page[feiniu.Note]{}, gerror.New("频道 ID 无效")
+	}
+	if limit < 1 || limit > 100 {
+		limit = 10
+	}
+	client, err := s.client(ctx, sourceID)
+	if err != nil {
+		return feiniu.Page[feiniu.Note]{}, err
+	}
+	return client.Notes(ctx, channelID, limit, strings.TrimSpace(nextNo), "")
 }
 func (s *Service) CreateScanTask(ctx context.Context, in ScanTaskInput) (*entity.ChannelScanTasks, error) {
 	if in.DataSourceID == "" || in.ChannelID <= 0 {
@@ -130,7 +150,27 @@ func (s *Service) ListScanTasks(ctx context.Context, page, pageSize int) (*ScanT
 	if err = model.OrderDesc(dao.ChannelScanTasks.Columns().CreatedAt).Page(page, pageSize).Scan(&rows); err != nil {
 		return nil, err
 	}
-	return &ScanTaskPage{Items: rows, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
+	items := make([]ScanTask, 0, len(rows))
+	itemColumns := dao.SearchTaskItems.Columns()
+	for _, row := range rows {
+		completed := 0
+		if row.SearchTaskId != "" {
+			completed, err = dao.SearchTaskItems.Ctx(ctx).Where(itemColumns.SearchTaskId, row.SearchTaskId).
+				WhereIn(itemColumns.Status, []string{"completed", "partial_failed", "failed", "cancelled", "filtered"}).Count()
+			if err != nil {
+				return nil, err
+			}
+		}
+		progress := 0
+		if row.FetchedCount > 0 {
+			progress = (completed + row.SkippedCount) * 100 / row.FetchedCount
+			if progress > 100 {
+				progress = 100
+			}
+		}
+		items = append(items, ScanTask{ChannelScanTasks: row, CompletedCount: completed, ProgressPercent: progress})
+	}
+	return &ScanTaskPage{Items: items, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
 }
 func (s *Service) RunScan(ctx context.Context, taskID string) error {
 	var task entity.ChannelScanTasks
@@ -158,6 +198,18 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 	if err != nil {
 		return s.failScan(ctx, task, err)
 	}
+	relationColumns := dao.SourceScanTaskNotes.Columns()
+	currentCount, err := dao.SourceScanTaskNotes.Ctx(ctx).Where(relationColumns.ScanTaskId, task.Id).Count()
+	if err != nil {
+		return s.failScan(ctx, task, err)
+	}
+	remaining := task.InitialLimit - currentCount
+	if remaining < len(page.Items) {
+		if remaining < 0 {
+			remaining = 0
+		}
+		page.Items = page.Items[:remaining]
+	}
 	for _, note := range page.Items {
 		raw, _ := json.Marshal(note)
 		attrs, _ := json.Marshal(note.Attributes)
@@ -175,13 +227,22 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 		}
 		availableAssetIDs := make([]string, 0, len(note.Media))
 		for _, media := range note.Media {
+			assetType := strings.ToLower(strings.TrimSpace(media.AssetType))
+			if assetType == "" {
+				assetType = "image"
+			}
 			downloadURL := mediaDownloadURL(media, client.ImageBaseURL)
-			if media.AssetType != "image" || downloadURL == "" {
+			if strings.Contains(assetType, "video") {
+				// 视频只进入图片搜索的预览图链路，禁止把视频 content_url 交给设备。
+				assetType = "video_preview"
+				downloadURL = media.PreviewDownloadURL()
+			}
+			if (assetType != "image" && assetType != "video_preview") || downloadURL == "" {
 				continue
 			}
 			availableAssetIDs = append(availableAssetIDs, fmt.Sprint(media.AssetID))
 			mediaRaw, _ := json.Marshal(media)
-			if err = saveSourceImage(ctx, saved.Id, media, downloadURL, string(mediaRaw)); err != nil {
+			if err = saveSourceImage(ctx, saved.Id, media, assetType, downloadURL, string(mediaRaw)); err != nil {
 				return err
 			}
 		}
@@ -201,7 +262,8 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 		LastSuccessAt: time.Now(),
 		LastError:     "",
 	}
-	shouldContinue := page.HasMore && page.NextNo != ""
+	fetchedCount := currentCount + len(page.Items)
+	shouldContinue := page.HasMore && page.NextNo != "" && fetchedCount < task.InitialLimit
 	if shouldContinue {
 		update.Status = "queued"
 		update.CursorValue = page.NextNo
@@ -222,7 +284,7 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 	return nil
 }
 
-func saveSourceImage(ctx context.Context, noteID string, media feiniu.Media, downloadURL, rawJSON string) error {
+func saveSourceImage(ctx context.Context, noteID string, media feiniu.Media, assetType, downloadURL, rawJSON string) error {
 	columns := dao.SourceNoteImages.Columns()
 	model := dao.SourceNoteImages.Ctx(ctx).
 		Where(columns.NoteId, noteID).
@@ -231,7 +293,7 @@ func saveSourceImage(ctx context.Context, noteID string, media feiniu.Media, dow
 	if err := model.Scan(&current); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	data := do.SourceNoteImages{AssetType: media.AssetType, SourceUrl: downloadURL, Phash: media.PHash, RawJson: rawJSON, ImageIndex: media.Sort}
+	data := do.SourceNoteImages{AssetType: assetType, SourceUrl: downloadURL, Phash: media.PHash, RawJson: rawJSON, ImageIndex: media.Sort}
 	if current.Id != "" {
 		if current.DownloadStatus == "unavailable" || (current.DownloadStatus == "failed" && current.FileId == "") {
 			data.DownloadStatus = "pending"
@@ -339,6 +401,40 @@ func (s *Service) Update(ctx context.Context, id string, in SaveInput) (*Source,
 	}
 	return nil, gerror.New("数据源更新后读取失败")
 }
+
+func (s *Service) Delete(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return gerror.New("数据源 ID 不能为空")
+	}
+	var current entity.DataSources
+	if err := dao.DataSources.Ctx(ctx).Where(dao.DataSources.Columns().Id, id).Scan(&current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return gerror.New("数据源不存在")
+		}
+		return err
+	}
+	if current.Id == "" {
+		return gerror.New("数据源不存在")
+	}
+	return dao.DataSources.Transaction(ctx, func(ctx context.Context, tx gdb.TX) error {
+		taskColumns := dao.ChannelScanTasks.Columns()
+		if _, err := tx.Model(dao.ChannelScanTasks.Table()).Ctx(ctx).
+			Where(taskColumns.DataSourceId, id).
+			Data(do.ChannelScanTasks{Status: "cancelled", NextRunAt: nil, LastError: "关联数据源已删除"}).Update(); err != nil {
+			return gerror.Wrap(err, "取消数据源扫描任务失败")
+		}
+		if _, err := tx.Model(dao.SourceChannels.Table()).Ctx(ctx).
+			Where(dao.SourceChannels.Columns().DataSourceId, id).Delete(); err != nil {
+			return gerror.Wrap(err, "清理数据源频道缓存失败")
+		}
+		if _, err := tx.Model(dao.DataSources.Table()).Ctx(ctx).
+			Where(dao.DataSources.Columns().Id, id).Delete(); err != nil {
+			return gerror.Wrap(err, "删除数据源失败")
+		}
+		return nil
+	})
+}
 func (s *Service) SyncChannels(ctx context.Context, id string) (int, error) {
 	client, err := s.client(ctx, id)
 	if err != nil {
@@ -409,10 +505,34 @@ func (s *Service) ListChannels(ctx context.Context, sourceID, keyword string, pa
 		return nil, err
 	}
 	var rows []entity.SourceChannels
-	if err = model.OrderDesc(columns.LastSyncedAt).Page(page, pageSize).Scan(&rows); err != nil {
+	if err = model.OrderDesc(columns.IsPinned).OrderDesc(columns.LastSyncedAt).Page(page, pageSize).Scan(&rows); err != nil {
 		return nil, err
 	}
 	return &SourceChannelPage{Items: rows, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
+}
+
+func (s *Service) SetChannelPinned(ctx context.Context, id string, pinned bool) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return gerror.New("频道 ID 不能为空")
+	}
+	value := 0
+	if pinned {
+		value = 1
+	}
+	result, err := dao.SourceChannels.Ctx(ctx).Where(dao.SourceChannels.Columns().Id, id).
+		Data(do.SourceChannels{IsPinned: value}).Update()
+	if err != nil {
+		return gerror.Wrap(err, "更新频道置顶状态失败")
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return gerror.Wrap(err, "读取频道置顶更新结果失败")
+	}
+	if affected == 0 {
+		return gerror.New("频道不存在")
+	}
+	return nil
 }
 
 func (s *Service) client(ctx context.Context, id string) (*feiniu.Client, error) {

@@ -33,8 +33,22 @@ export interface SearchItem {
   fileUrl: string
   ordinal: number
   status: string
+  jobId?: string
   errorCode?: string
   errorMessage?: string
+}
+
+export interface SourceImage {
+  id: string
+  groupId: string
+  searchItemId?: string
+  fileId?: string
+  fileUrl?: string
+  imageIndex: number
+  downloadStatus: string
+  preprocessStatus?: string
+  filterDecision?: string
+  filterReason?: string
 }
 
 export interface SearchRequestPage {
@@ -48,6 +62,7 @@ export interface SearchRequestDetail {
   request: SearchRequestSummary
   groups: SearchGroup[]
   items: SearchItem[]
+  sourceImages: SourceImage[]
 }
 
 export interface SearchCandidate {

@@ -21,4 +21,5 @@ type SourceChannels struct {
 	LastSyncedAt any //
 	CreatedAt    any //
 	UpdatedAt    any //
+	IsPinned     any //
 }

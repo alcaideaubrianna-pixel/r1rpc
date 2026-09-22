@@ -43,12 +43,13 @@ func NewRuntime(application *app.App, redis asynq.RedisClientOpt, apiConcurrency
 		scanInterval:     scanInterval,
 		downloadInterval: downloadInterval,
 		server: asynq.NewServer(redis, asynq.Config{
-			Concurrency: apiConcurrency*2 + downloadConcurrency,
+			Concurrency: apiConcurrency*3 + downloadConcurrency,
 			Queues: map[string]int{
-				imageQueue:      apiConcurrency,
-				analysisQueue:   apiConcurrency,
-				sourceScanQueue: apiConcurrency,
-				downloadQueue:   downloadConcurrency,
+				imageQueue:         apiConcurrency,
+				analysisQueue:      apiConcurrency,
+				sourceScanQueue:    apiConcurrency,
+				sourcePrepareQueue: apiConcurrency,
+				downloadQueue:      downloadConcurrency,
 			},
 		}),
 	}

@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS channel_scan_tasks (
     next_run_at DATETIME NULL,
     last_success_at DATETIME NULL,
     last_error VARCHAR(1024) NOT NULL DEFAULT '',
+    fetched_count INT NOT NULL DEFAULT 0,
+    skipped_count INT NOT NULL DEFAULT 0,
     image_search_request_id CHAR(32) NOT NULL DEFAULT '',
     search_task_id CHAR(32) NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -105,10 +107,11 @@ CREATE TABLE IF NOT EXISTS source_channels (
     chat_type VARCHAR(64) NOT NULL DEFAULT '',
     raw_json LONGTEXT NULL,
     last_synced_at DATETIME NULL,
+    is_pinned TINYINT(1) NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_source_channels_source_channel (data_source_id, channel_id),
-    INDEX idx_source_channels_source_title (data_source_id, title),
+    INDEX idx_source_channels_source_pinned_title (data_source_id, is_pinned, title),
     INDEX idx_source_channels_synced (last_synced_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

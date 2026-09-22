@@ -20,4 +20,5 @@ type SourceChannels struct {
 	LastSyncedAt time.Time `json:"lastSyncedAt" orm:"last_synced_at" ` //
 	CreatedAt    time.Time `json:"createdAt"    orm:"created_at"     ` //
 	UpdatedAt    time.Time `json:"updatedAt"    orm:"updated_at"     ` //
+	IsPinned     int       `json:"isPinned"     orm:"is_pinned"      ` //
 }

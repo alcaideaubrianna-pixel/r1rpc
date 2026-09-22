@@ -39,7 +39,19 @@ func (p *Processor) ProcessImageDownload(ctx context.Context, task *asynq.Task) 
 	if err != nil {
 		return err
 	}
-	result, ok := p.analyzeCandidateImage(ctx, image, imaging.NewDownloader(), source, policy)
+	result, ok, analyzeErr := p.analyzeCandidateImage(ctx, image, imaging.NewDownloader(), source, policy)
+	if analyzeErr != nil {
+		retryCount, _ := asynq.GetRetryCount(ctx)
+		maxRetry, _ := asynq.GetMaxRetry(ctx)
+		if imaging.IsRetryableDownloadError(analyzeErr) && retryCount < maxRetry {
+			_, _ = dao.ImageCandidateImages.Ctx(ctx).Where(columns.Id, image.Id).
+				Data(do.ImageCandidateImages{DownloadStatus: "queued", ErrorMessage: analyzeErr.Error()}).Update()
+			return analyzeErr
+		}
+		if err := markCandidateImageFailed(ctx, image.Id, analyzeErr); err != nil {
+			return err
+		}
+	}
 	if ok {
 		if candidate.ImageFileId == "" || result.Comparison.Score > candidate.Score {
 			if err := saveCandidateImageScore(ctx, candidate.Id, result); err != nil {

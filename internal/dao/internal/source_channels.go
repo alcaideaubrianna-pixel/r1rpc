@@ -31,6 +31,7 @@ type SourceChannelsColumns struct {
 	LastSyncedAt string //
 	CreatedAt    string //
 	UpdatedAt    string //
+	IsPinned     string //
 }
 
 // sourceChannelsColumns holds the columns for the table source_channels.
@@ -45,6 +46,7 @@ var sourceChannelsColumns = SourceChannelsColumns{
 	LastSyncedAt: "last_synced_at",
 	CreatedAt:    "created_at",
 	UpdatedAt:    "updated_at",
+	IsPinned:     "is_pinned",
 }
 
 // NewSourceChannelsDao creates and returns a new DAO object for table data access.

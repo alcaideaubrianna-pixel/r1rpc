@@ -29,4 +29,6 @@ type ChannelScanTasks struct {
 	CreatedAt            time.Time `json:"createdAt"            orm:"created_at"              ` //
 	UpdatedAt            time.Time `json:"updatedAt"            orm:"updated_at"              ` //
 	SearchTaskId         string    `json:"searchTaskId"         orm:"search_task_id"          ` //
+	FetchedCount         int       `json:"fetchedCount"         orm:"fetched_count"           ` //
+	SkippedCount         int       `json:"skippedCount"         orm:"skipped_count"           ` //
 }

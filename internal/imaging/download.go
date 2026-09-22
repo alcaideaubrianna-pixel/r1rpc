@@ -2,12 +2,14 @@ package imaging
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,8 +20,16 @@ type Downloader struct {
 	allowedHTTPHost string
 }
 
+var (
+	sharedDownloaderOnce sync.Once
+	sharedDownloader     *Downloader
+)
+
 func NewDownloader() *Downloader {
-	return newDownloader("")
+	sharedDownloaderOnce.Do(func() {
+		sharedDownloader = newDownloader("")
+	})
+	return sharedDownloader
 }
 
 // NewSourceDownloader 仅允许已由管理员配置的数据源主机使用 HTTP。
@@ -39,7 +49,13 @@ func NewSourceDownloader(baseURL string) (*Downloader, error) {
 func newDownloader(allowedHTTPHost string) *Downloader {
 	dialer := &net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
-		Proxy: nil,
+		// CDN 在当前部署网络中需要通过 HTTP(S)_PROXY 访问；显式禁用代理会导致直连 EOF。
+		Proxy:                 http.ProxyFromEnvironment,
+		MaxIdleConns:          128,
+		MaxIdleConnsPerHost:   32,
+		MaxConnsPerHost:       32,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 12 * time.Second,
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(address)
 			if err != nil {
@@ -64,6 +80,23 @@ func newDownloader(allowedHTTPHost string) *Downloader {
 		},
 	}
 	return &Downloader{client: client, allowedHTTPHost: allowedHTTPHost}
+}
+
+// IsRetryableDownloadError 区分临时网络故障，交由队列退避重试。
+func IsRetryableDownloadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return true
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "eof") || strings.Contains(message, "tls handshake timeout") ||
+		strings.Contains(message, "connection reset") || strings.Contains(message, "timeout")
 }
 
 func (d *Downloader) Download(ctx context.Context, rawURL string) ([]byte, error) {

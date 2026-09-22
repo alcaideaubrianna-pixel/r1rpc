@@ -94,19 +94,63 @@ func (s *Service) GetOne(ctx context.Context, id string) (*output.ImageSearchReq
 		}
 	}
 	result.Items = make([]output.ImageSearchItem, 0, len(items))
+	itemByFileID := make(map[string]output.ImageSearchItem, len(items))
 	for _, item := range items {
 		fileID := assetFiles[item.SourceAssetId]
 		fileURL := ""
 		if fileID != "" && s.files != nil {
 			fileURL, _ = s.files.URL(ctx, fileID)
 		}
-		result.Items = append(result.Items, output.ImageSearchItem{
+		mapped := output.ImageSearchItem{
 			ID: item.Id, GroupID: item.GroupId, FileID: fileID, FileURL: fileURL,
-			Ordinal: item.Ordinal, Status: item.Status,
+			Ordinal: item.Ordinal, Status: item.Status, JobID: item.JobId,
 			ErrorCode: item.ErrorCode, ErrorMessage: item.ErrorMessage,
-		})
+		}
+		result.Items = append(result.Items, mapped)
+		if fileID != "" {
+			itemByFileID[fileID] = mapped
+		}
+	}
+	if request.Source == "channel_scan_item" {
+		if err := s.loadSourceImages(ctx, &result, request.ExternalId, itemByFileID); err != nil {
+			return nil, err
+		}
 	}
 	return &result, nil
+}
+
+func (s *Service) loadSourceImages(ctx context.Context, result *output.ImageSearchRequest, externalID string, itemByFileID map[string]output.ImageSearchItem) error {
+	parts := strings.Split(externalID, ":")
+	if len(parts) != 3 || parts[0] != "source-note" || parts[2] == "" {
+		return nil
+	}
+	columns := dao.SourceNoteImages.Columns()
+	var records []entity.SourceNoteImages
+	if err := dao.SourceNoteImages.Ctx(ctx).Where(columns.NoteId, parts[2]).OrderAsc(columns.ImageIndex).Scan(&records); err != nil {
+		return gerror.Wrap(err, "查询资料源图片失败")
+	}
+	defaultGroupID := ""
+	if len(result.Groups) > 0 {
+		defaultGroupID = result.Groups[0].ID
+	}
+	result.SourceImages = make([]output.SourceImage, 0, len(records))
+	for _, record := range records {
+		fileURL := ""
+		if record.FileId != "" && s.files != nil {
+			fileURL, _ = s.files.URL(ctx, record.FileId)
+		}
+		groupID, searchItemID := defaultGroupID, ""
+		if item, ok := itemByFileID[record.FileId]; ok {
+			groupID, searchItemID = item.GroupID, item.ID
+		}
+		result.SourceImages = append(result.SourceImages, output.SourceImage{
+			ID: record.Id, GroupID: groupID, SearchItemID: searchItemID,
+			FileID: record.FileId, FileURL: fileURL, ImageIndex: record.ImageIndex,
+			DownloadStatus: record.DownloadStatus, PreprocessStatus: record.PreprocessStatus,
+			FilterDecision: record.FilterDecision, FilterReason: record.FilterReason,
+		})
+	}
+	return nil
 }
 
 func (s *Service) GetList(ctx context.Context, page, pageSize int, status string) (*output.ImageSearchRequestPage, error) {

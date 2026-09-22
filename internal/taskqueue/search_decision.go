@@ -165,7 +165,9 @@ func (p *Processor) refreshDecisionRequest(ctx context.Context, requestID string
 	status := "running"
 	if active == 0 && len(groups) > 0 {
 		status = "completed"
-		if failed > 0 {
+		if failed == len(groups) {
+			status = "failed"
+		} else if failed > 0 {
 			status = "partial_failed"
 		}
 	}

@@ -53,7 +53,35 @@ func (p *Processor) prepareSourceSearch(ctx context.Context, taskID string) erro
 			Data(do.SearchTasks{Status: "failed", ErrorMessage: cause.Error()}).Update()
 		return p.markSourcePrepareError(ctx, scan.Id, cause)
 	}
+	fetchedCount := len(relations)
+	relations, err = excludeProcessedNotes(ctx, relations)
+	if err != nil {
+		return p.markSourcePrepareError(ctx, scan.Id, err)
+	}
+	if len(relations) == 0 {
+		status := "completed"
+		nextRunAt := any(nil)
+		if scan.Mode == "continuous" {
+			status = "waiting"
+			nextRunAt = time.Now().Add(time.Duration(scan.PollIntervalMinutes) * time.Minute)
+		}
+		_, err = dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, scan.Id).
+			Data(do.ChannelScanTasks{Status: status, NextRunAt: nextRunAt, FetchedCount: fetchedCount, SkippedCount: fetchedCount, LastError: fmt.Sprintf("拉取 %d 条，新增 0 条，跳过 %d 条已扫描资料", fetchedCount, fetchedCount)}).Update()
+		return err
+	}
 	_, err = dao.SearchTasks.Ctx(ctx).Data(do.SearchTasks{Id: searchTaskID, SourceType: "channel_scan", SourceTaskId: searchTaskID, Title: scan.ChannelTitle, ConfigId: config.Id, ConfigSnapshotJson: snapshot, Status: "preparing"}).InsertIgnore()
+	if err != nil {
+		return p.markSourcePrepareError(ctx, scan.Id, err)
+	}
+	_, err = dao.SearchTasks.Ctx(ctx).Where(dao.SearchTasks.Columns().Id, searchTaskID).Data(do.SearchTasks{
+		SourceTaskId: scan.Id, Status: "preparing", TotalCount: len(relations), ErrorMessage: "",
+	}).Update()
+	if err != nil {
+		return p.markSourcePrepareError(ctx, scan.Id, err)
+	}
+	_, err = dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, scan.Id).Data(do.ChannelScanTasks{
+		SearchTaskId: searchTaskID, FetchedCount: fetchedCount, SkippedCount: fetchedCount - len(relations), LastError: "",
+	}).Update()
 	if err != nil {
 		return p.markSourcePrepareError(ctx, scan.Id, err)
 	}
@@ -70,14 +98,39 @@ func (p *Processor) prepareSourceSearch(ctx context.Context, taskID string) erro
 		status = "waiting"
 	}
 	_, err = dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, scan.Id).
-		Data(do.ChannelScanTasks{Status: status, SearchTaskId: searchTaskID, LastError: ""}).Update()
+		Data(do.ChannelScanTasks{Status: status, SearchTaskId: searchTaskID, FetchedCount: fetchedCount, SkippedCount: fetchedCount - created, LastError: ""}).Update()
 	return err
+}
+
+func excludeProcessedNotes(ctx context.Context, relations []entity.SourceScanTaskNotes) ([]entity.SourceScanTaskNotes, error) {
+	noteIDs := make([]string, 0, len(relations))
+	for _, relation := range relations {
+		noteIDs = append(noteIDs, relation.NoteId)
+	}
+	columns := dao.SearchTaskItems.Columns()
+	var processed []entity.SearchTaskItems
+	if err := dao.SearchTaskItems.Ctx(ctx).Fields(columns.SourceNoteId).
+		WhereIn(columns.SourceNoteId, noteIDs).Scan(&processed); err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(processed))
+	for _, item := range processed {
+		seen[item.SourceNoteId] = struct{}{}
+	}
+	result := make([]entity.SourceScanTaskNotes, 0, len(relations))
+	for _, relation := range relations {
+		if _, exists := seen[relation.NoteId]; !exists {
+			result = append(result, relation)
+		}
+	}
+	return result, nil
 }
 
 func loadScanRelations(ctx context.Context, scan entity.ChannelScanTasks) ([]entity.SourceScanTaskNotes, error) {
 	relationColumns := dao.SourceScanTaskNotes.Columns()
 	var relations []entity.SourceScanTaskNotes
-	if err := dao.SourceScanTaskNotes.Ctx(ctx).Where(relationColumns.ScanTaskId, scan.Id).Scan(&relations); err != nil {
+	if err := dao.SourceScanTaskNotes.Ctx(ctx).Where(relationColumns.ScanTaskId, scan.Id).
+		OrderAsc(relationColumns.CreatedAt).Limit(scan.InitialLimit).Scan(&relations); err != nil {
 		return nil, err
 	}
 	if len(relations) == 0 {

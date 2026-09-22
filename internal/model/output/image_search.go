@@ -16,7 +16,21 @@ type ImageSearchRequest struct {
 	CreatedAt       time.Time          `json:"createdAt"`
 	Groups          []ImageSearchGroup `json:"groups,omitempty"`
 	Items           []ImageSearchItem  `json:"items,omitempty"`
+	SourceImages    []SourceImage      `json:"sourceImages,omitempty"`
 	Existed         bool               `json:"-"`
+}
+
+type SourceImage struct {
+	ID               string `json:"id"`
+	GroupID          string `json:"groupId"`
+	SearchItemID     string `json:"searchItemId,omitempty"`
+	FileID           string `json:"fileId,omitempty"`
+	FileURL          string `json:"fileUrl,omitempty"`
+	ImageIndex       int    `json:"imageIndex"`
+	DownloadStatus   string `json:"downloadStatus"`
+	PreprocessStatus string `json:"preprocessStatus,omitempty"`
+	FilterDecision   string `json:"filterDecision,omitempty"`
+	FilterReason     string `json:"filterReason,omitempty"`
 }
 
 type ImageSearchGroup struct {
@@ -40,6 +54,7 @@ type ImageSearchItem struct {
 	FileURL      string
 	Ordinal      int
 	Status       string
+	JobID        string
 	ErrorCode    string
 	ErrorMessage string
 }

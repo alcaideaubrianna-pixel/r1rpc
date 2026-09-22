@@ -118,7 +118,10 @@ func (p *Processor) analyzeCandidateImages(
 	var best candidateImageResult
 	found := false
 	for _, image := range images {
-		result, ok := p.analyzeCandidateImage(ctx, image, downloader, source, policy)
+		result, ok, err := p.analyzeCandidateImage(ctx, image, downloader, source, policy)
+		if err != nil {
+			return candidateImageResult{}, false, err
+		}
 		if !ok {
 			continue
 		}
@@ -138,7 +141,7 @@ func (p *Processor) analyzeCandidateImage(
 	downloader *imaging.Downloader,
 	source imaging.Hashes,
 	policy matchPolicy,
-) (candidateImageResult, bool) {
+) (candidateImageResult, bool, error) {
 	startedAt := time.Now()
 	if image.ImageFileId != "" && image.AlgorithmVersion == imaging.AlgorithmVersion {
 		if hashes, err := imaging.ParseHashes(image.Phash, image.Dhash, image.Ahash); err == nil {
@@ -147,40 +150,39 @@ func (p *Processor) analyzeCandidateImage(
 			_ = updateCandidateImage(ctx, image.Id, image.ImageFileId, image.ImageSha256, hashes, comparison, matched)
 			log.Printf("image_analysis reused candidate=%s image=%d score=%.6f elapsed_ms=%d",
 				image.CandidateId, image.ImageIndex, comparison.Score, time.Since(startedAt).Milliseconds())
-			return candidateImageResult{image.ImageFileId, image.ImageSha256, hashes, comparison, matched}, true
+			return candidateImageResult{image.ImageFileId, image.ImageSha256, hashes, comparison, matched}, true, nil
 		}
 	}
 	data, err := downloader.Download(ctx, image.SourceUrl)
 	if err != nil {
-		_ = markCandidateImageFailed(ctx, image.Id, err)
 		log.Printf("image_analysis download_failed candidate=%s image=%d elapsed_ms=%d error=%v",
 			image.CandidateId, image.ImageIndex, time.Since(startedAt).Milliseconds(), err)
-		return candidateImageResult{}, false
+		return candidateImageResult{}, false, err
 	}
 	decoded, err := imaging.Decode(data)
 	if err != nil {
 		_ = markCandidateImageFailed(ctx, image.Id, err)
-		return candidateImageResult{}, false
+		return candidateImageResult{}, false, nil
 	}
 	hashes, err := imaging.ComputeHashes(decoded)
 	if err != nil {
 		_ = markCandidateImageFailed(ctx, image.Id, err)
-		return candidateImageResult{}, false
+		return candidateImageResult{}, false, nil
 	}
 	stored, err := p.app.Files.SaveBytes(ctx, data, "xhs-candidate.jpg", 0)
 	if err != nil {
 		_ = markCandidateImageFailed(ctx, image.Id, err)
-		return candidateImageResult{}, false
+		return candidateImageResult{}, false, err
 	}
 	comparison := imaging.Compare(source, hashes)
 	matched := isMatch(comparison, policy)
 	sha256Value := imageSHA256(data)
 	if err := updateCandidateImage(ctx, image.Id, stored.ID, sha256Value, hashes, comparison, matched); err != nil {
-		return candidateImageResult{}, false
+		return candidateImageResult{}, false, err
 	}
 	log.Printf("image_analysis completed candidate=%s image=%d score=%.6f matched=%t elapsed_ms=%d",
 		image.CandidateId, image.ImageIndex, comparison.Score, matched, time.Since(startedAt).Milliseconds())
-	return candidateImageResult{stored.ID, sha256Value, hashes, comparison, matched}, true
+	return candidateImageResult{stored.ID, sha256Value, hashes, comparison, matched}, true, nil
 }
 
 func updateCandidateImage(ctx context.Context, imageID, fileID, sha256Value string, hashes imaging.Hashes, comparison imaging.Comparison, matched bool) error {
