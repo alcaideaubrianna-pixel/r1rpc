@@ -18,6 +18,7 @@ import (
 	"r1rpc/internal/ocr"
 
 	"github.com/gogf/gf/v2/errors/gerror"
+	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/util/guid"
 	"github.com/hibiken/asynq"
 )
@@ -54,9 +55,11 @@ func (p *Processor) prepareSourceSearch(ctx context.Context, taskID string) erro
 		return p.markSourcePrepareError(ctx, scan.Id, cause)
 	}
 	fetchedCount := len(relations)
-	relations, err = excludeProcessedNotes(ctx, relations)
-	if err != nil {
-		return p.markSourcePrepareError(ctx, scan.Id, err)
+	if scan.Mode != "selected" {
+		relations, err = excludeProcessedNotes(ctx, relations)
+		if err != nil {
+			return p.markSourcePrepareError(ctx, scan.Id, err)
+		}
 	}
 	if len(relations) == 0 {
 		status := "completed"
@@ -259,6 +262,18 @@ func (p *Processor) prepareNoteImages(ctx context.Context, sourceID, noteID stri
 		return preparedImages{}, err
 	}
 	result := preparedImages{Items: make([]input.ImageSearchItem, 0, len(records))}
+	var source entity.DataSources
+	if err := dao.DataSources.Ctx(ctx).Where(dao.DataSources.Columns().Id, sourceID).Scan(&source); err != nil {
+		return result, err
+	}
+	imageBase := strings.TrimSpace(source.ImageBaseUrl)
+	if imageBase == "" {
+		imageBase = source.BaseUrl
+	}
+	downloader, err := imaging.NewSourceDownloader(imageBase)
+	if err != nil {
+		return result, err
+	}
 	keywords, err := searchOCRKeywords(config.OcrKeywordsJson)
 	if err != nil {
 		return result, err
@@ -278,20 +293,22 @@ func (p *Processor) prepareNoteImages(ctx context.Context, sourceID, noteID stri
 			var data []byte
 			var err error
 			parsedURL, _ := url.Parse(strings.TrimSpace(record.SourceUrl))
-			if parsedURL != nil && parsedURL.IsAbs() && parsedURL.Scheme == "https" {
-				data, err = imaging.NewDownloader().Download(ctx, record.SourceUrl)
+			if parsedURL != nil && parsedURL.IsAbs() {
+				data, err = downloader.Download(ctx, record.SourceUrl)
 			} else if parseErr == nil && assetID > 0 {
 				data, err = p.app.DataSources.DownloadAsset(ctx, sourceID, assetID)
 			} else {
-				data, err = p.downloadSourceImage(ctx, sourceID, record.SourceUrl)
+				data, err = p.downloadSourceImage(ctx, source, downloader, record.SourceUrl)
 			}
 			if err != nil {
+				g.Log().Errorf(ctx, "资料图片下载失败 noteID=%s imageID=%s index=%d url=%s err=%v", noteID, record.Id, record.ImageIndex, record.SourceUrl, err)
 				p.failSourceImage(ctx, record.Id, err)
 				result.Failed++
 				continue
 			}
 			stored, err := p.app.Files.SaveBytes(ctx, data, "source-image.jpg", 0)
 			if err != nil {
+				g.Log().Errorf(ctx, "资料图片存储失败 noteID=%s imageID=%s index=%d err=%v", noteID, record.Id, record.ImageIndex, err)
 				p.failSourceImage(ctx, record.Id, err)
 				result.Failed++
 				continue
@@ -302,9 +319,11 @@ func (p *Processor) prepareNoteImages(ctx context.Context, sourceID, noteID stri
 				return result, err
 			}
 		}
-		if config.OcrEnabled == 1 {
+		// 没有配置屏蔽词时无需启动 OCR；否则 OCR 环境问题会把本可搜索的图片全部判为失败。
+		if config.OcrEnabled == 1 && len(keywords) > 0 {
 			blocked, recognizeErr := p.preprocessSourceImage(ctx, processor, record, fileID, keywords, config.OcrMatchMode)
 			if recognizeErr != nil {
+				g.Log().Errorf(ctx, "资料图片 OCR 失败 noteID=%s imageID=%s index=%d err=%v", noteID, record.Id, record.ImageIndex, recognizeErr)
 				result.Failed++
 				continue
 			}
@@ -360,23 +379,18 @@ func searchOCRKeywords(raw string) ([]string, error) {
 	return keywords, nil
 }
 
-func (p *Processor) downloadSourceImage(ctx context.Context, sourceID, raw string) ([]byte, error) {
+func (p *Processor) downloadSourceImage(ctx context.Context, source entity.DataSources, downloader *imaging.Downloader, raw string) ([]byte, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return nil, err
 	}
 	if parsed.IsAbs() {
-		return imaging.NewDownloader().Download(ctx, parsed.String())
+		return downloader.Download(ctx, parsed.String())
 	}
-	var source entity.DataSources
-	if err = dao.DataSources.Ctx(ctx).Where(dao.DataSources.Columns().Id, sourceID).Scan(&source); err != nil {
-		return nil, err
+	base, err := url.Parse(source.ImageBaseUrl)
+	if strings.TrimSpace(source.ImageBaseUrl) == "" {
+		base, err = url.Parse(source.BaseUrl)
 	}
-	base, err := url.Parse(source.BaseUrl)
-	if err != nil {
-		return nil, err
-	}
-	downloader, err := imaging.NewSourceDownloader(source.BaseUrl)
 	if err != nil {
 		return nil, err
 	}

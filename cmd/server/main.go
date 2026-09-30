@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -88,11 +90,14 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	accessURL, port := httpAccessURL(cfg.HTTPAddr)
 	g.Log().Info(context.Background(), g.Map{
-		"event":     "server_start",
-		"address":   cfg.HTTPAddr,
-		"time_zone": cfg.TimeZone,
-	})
+		"event":          "server_start",
+		"listen_address": cfg.HTTPAddr,
+		"access_url":     accessURL,
+		"port":           port,
+		"time_zone":      cfg.TimeZone,
+	}, fmt.Sprintf("HTTP 服务已启动，访问地址: %s", accessURL))
 	g.Log().Info(context.Background(), g.Map{"event": "invoke_auth", "mode": "group-scoped"})
 	serveDone := make(chan error, 1)
 	go func() {
@@ -137,4 +142,15 @@ func main() {
 			g.Log().Errorf(context.Background(), "关闭应用失败: %+v", closeErr)
 		}
 	}
+}
+
+func httpAccessURL(address string) (string, string) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "http://" + address, ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "localhost"
+	}
+	return "http://" + net.JoinHostPort(host, port), port
 }

@@ -36,11 +36,16 @@ type Service struct {
 	enqueuer Enqueuer
 }
 type SourceChannelPage struct {
-	Items      []entity.SourceChannels `json:"items"`
-	Page       int                     `json:"page"`
-	PageSize   int                     `json:"pageSize"`
-	Total      int64                   `json:"total"`
-	TotalPages int                     `json:"totalPages"`
+	Items      []SourceChannel `json:"items"`
+	Page       int             `json:"page"`
+	PageSize   int             `json:"pageSize"`
+	Total      int64           `json:"total"`
+	TotalPages int             `json:"totalPages"`
+}
+type SourceChannel struct {
+	entity.SourceChannels
+	CachedNotes  int `json:"cachedNotes"`
+	ScannedNotes int `json:"scannedNotes"`
 }
 type Source struct {
 	ID               string    `json:"id"`
@@ -75,14 +80,41 @@ type ScanTask struct {
 	ProgressPercent int `json:"progressPercent"`
 }
 type ScanTaskInput struct {
-	DataSourceID        string `json:"dataSourceId"`
-	ChannelID           int64  `json:"channelId"`
-	ChannelTitle        string `json:"channelTitle"`
-	Mode                string `json:"mode"`
-	InitialLimit        int    `json:"initialLimit"`
-	PollIntervalMinutes int    `json:"pollIntervalMinutes"`
-	Priority            int    `json:"priority"`
-	SearchConfigID      string `json:"searchConfigId"`
+	DataSourceID        string   `json:"dataSourceId"`
+	ChannelID           int64    `json:"channelId"`
+	ChannelTitle        string   `json:"channelTitle"`
+	Mode                string   `json:"mode"`
+	InitialLimit        int      `json:"initialLimit"`
+	PollIntervalMinutes int      `json:"pollIntervalMinutes"`
+	Priority            int      `json:"priority"`
+	SearchConfigID      string   `json:"searchConfigId"`
+	NoteIDs             []string `json:"noteIds"`
+	AllNotes            bool     `json:"allNotes"`
+}
+
+type SourceNotePage struct {
+	Items      []SourceNote `json:"items"`
+	Page       int          `json:"page"`
+	PageSize   int          `json:"pageSize"`
+	Total      int64        `json:"total"`
+	TotalPages int          `json:"totalPages"`
+}
+
+type SourceNote struct {
+	entity.SourceNotes
+	ScanStatus          string            `json:"scanStatus"`
+	LastSearchTaskID    string            `json:"lastSearchTaskId"`
+	LastSearchRequestID string            `json:"lastSearchRequestId"`
+	BestScore           *float64          `json:"bestScore,omitempty"`
+	Images              []SourceNoteImage `json:"images"`
+}
+type SourceNoteImage struct {
+	Id         string `json:"id"`
+	ImageIndex int    `json:"imageIndex"`
+	SourceURL  string `json:"sourceUrl"`
+	VideoURL   string `json:"videoUrl,omitempty"`
+	FileID     string `json:"fileId"`
+	AssetType  string `json:"assetType"`
 }
 
 func (s *Service) SetEnqueuer(value Enqueuer) { s.enqueuer = value }
@@ -111,22 +143,49 @@ func (s *Service) CreateScanTask(ctx context.Context, in ScanTaskInput) (*entity
 	if in.DataSourceID == "" || in.ChannelID <= 0 {
 		return nil, gerror.New("数据源和频道不能为空")
 	}
-	if in.Mode != "continuous" {
+	if in.AllNotes && len(in.NoteIDs) == 0 {
+		var notes []entity.SourceNotes
+		if err := dao.SourceNotes.Ctx(ctx).Where(dao.SourceNotes.Columns().DataSourceId, in.DataSourceID).Where(dao.SourceNotes.Columns().ChannelId, in.ChannelID).Fields(dao.SourceNotes.Columns().Id).Scan(&notes); err != nil {
+			return nil, err
+		}
+		for _, note := range notes {
+			in.NoteIDs = append(in.NoteIDs, note.Id)
+		}
+	}
+	if in.Mode != "continuous" && in.Mode != "sync" {
 		in.Mode = "once"
 	}
-	if in.InitialLimit < 1 || in.InitialLimit > 100 {
+	if in.InitialLimit < 1 || in.InitialLimit > 10000 {
 		in.InitialLimit = 10
 	}
 	if in.PollIntervalMinutes < 5 || in.PollIntervalMinutes > 30 {
 		in.PollIntervalMinutes = 10
 	}
 	id := guid.S()
-	_, err := dao.ChannelScanTasks.Ctx(ctx).Data(do.ChannelScanTasks{Id: id, DataSourceId: in.DataSourceID, ChannelId: in.ChannelID, ChannelTitle: in.ChannelTitle, Mode: in.Mode, InitialLimit: in.InitialLimit, PollIntervalMinutes: in.PollIntervalMinutes, Priority: in.Priority, SearchConfigId: in.SearchConfigID, Status: "queued", NextRunAt: time.Now()}).Insert()
+	status := "queued"
+	if len(in.NoteIDs) > 0 {
+		if len(in.NoteIDs) > 100 {
+			return nil, gerror.New("单次最多选择 100 条资料")
+		}
+		status = "preparing"
+		in.Mode = "selected"
+	}
+	_, err := dao.ChannelScanTasks.Ctx(ctx).Data(do.ChannelScanTasks{Id: id, DataSourceId: in.DataSourceID, ChannelId: in.ChannelID, ChannelTitle: in.ChannelTitle, Mode: in.Mode, InitialLimit: in.InitialLimit, PollIntervalMinutes: in.PollIntervalMinutes, Priority: in.Priority, SearchConfigId: in.SearchConfigID, Status: status, NextRunAt: time.Now()}).Insert()
 	if err != nil {
 		return nil, err
 	}
+	for _, noteID := range in.NoteIDs {
+		if _, err = dao.SourceScanTaskNotes.Ctx(ctx).Data(do.SourceScanTaskNotes{Id: guid.S(), ScanTaskId: id, NoteId: strings.TrimSpace(noteID)}).InsertIgnore(); err != nil {
+			return nil, err
+		}
+	}
 	if s.enqueuer != nil {
-		if err = s.enqueuer.EnqueueSourceScan(ctx, id, in.Priority); err != nil {
+		if len(in.NoteIDs) > 0 {
+			err = s.enqueuer.EnqueueSourcePrepare(ctx, id)
+		} else {
+			err = s.enqueuer.EnqueueSourceScan(ctx, id, in.Priority)
+		}
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -172,6 +231,63 @@ func (s *Service) ListScanTasks(ctx context.Context, page, pageSize int) (*ScanT
 	}
 	return &ScanTaskPage{Items: items, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
 }
+
+func (s *Service) ListNotes(ctx context.Context, sourceID string, channelID int64, q string, page, pageSize int) (*SourceNotePage, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	cols := dao.SourceNotes.Columns()
+	model := dao.SourceNotes.Ctx(ctx).Where(cols.DataSourceId, sourceID).Where(cols.ChannelId, channelID)
+	if strings.TrimSpace(q) != "" {
+		model = model.WhereLike(cols.Title, "%"+strings.TrimSpace(q)+"%")
+	}
+	total, err := model.Count()
+	if err != nil {
+		return nil, err
+	}
+	var rows []entity.SourceNotes
+	if err = model.OrderDesc(cols.UpdatedAt).Page(page, pageSize).Scan(&rows); err != nil {
+		return nil, err
+	}
+	items := make([]SourceNote, 0, len(rows))
+	for _, row := range rows {
+		item := SourceNote{SourceNotes: row, ScanStatus: "未扫描"}
+		var images []entity.SourceNoteImages
+		_ = dao.SourceNoteImages.Ctx(ctx).Where(dao.SourceNoteImages.Columns().NoteId, row.Id).WhereNot(dao.SourceNoteImages.Columns().DownloadStatus, "unavailable").OrderAsc(dao.SourceNoteImages.Columns().ImageIndex).Scan(&images)
+		item.Images = make([]SourceNoteImage, 0, len(images))
+		for _, image := range images {
+			imageItem := SourceNoteImage{Id: image.Id, ImageIndex: image.ImageIndex, SourceURL: image.SourceUrl, FileID: image.FileId, AssetType: image.AssetType}
+			if image.AssetType == "video_preview" && image.RawJson != "" {
+				var media feiniu.Media
+				if json.Unmarshal([]byte(image.RawJson), &media) == nil {
+					imageItem.VideoURL = media.ContentURL
+				}
+			}
+			item.Images = append(item.Images, imageItem)
+		}
+		var taskItem entity.SearchTaskItems
+		if err := dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().SourceNoteId, row.Id).OrderDesc(dao.SearchTaskItems.Columns().UpdatedAt).Limit(1).Scan(&taskItem); err == nil && taskItem.Id != "" {
+			item.ScanStatus = taskItem.Status
+			if taskItem.ImageSearchRequestId != "" {
+				item.LastSearchRequestID = taskItem.ImageSearchRequestId
+			}
+			var task entity.SearchTasks
+			if dao.SearchTasks.Ctx(ctx).Where(dao.SearchTasks.Columns().Id, taskItem.SearchTaskId).Scan(&task) == nil {
+				item.LastSearchTaskID = task.Id
+			}
+			if taskItem.BestScore > 0 {
+				value := taskItem.BestScore
+				item.BestScore = &value
+			}
+		}
+		items = append(items, item)
+	}
+	return &SourceNotePage{Items: items, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
+}
+
 func (s *Service) RunScan(ctx context.Context, taskID string) error {
 	var task entity.ChannelScanTasks
 	if err := dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, taskID).Scan(&task); err != nil {
@@ -194,7 +310,8 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 	if !task.Watermark.IsZero() {
 		updatedAfter = task.Watermark.Format(time.RFC3339)
 	}
-	page, err := client.Notes(ctx, task.ChannelId, task.InitialLimit, task.CursorValue, updatedAfter)
+	// InitialLimit 是本地本次同步目标数；上游每页最多 100 条，后续通过 next_no 继续拉取。
+	page, err := client.Notes(ctx, task.ChannelId, feiniu.MaxPageSize, task.CursorValue, updatedAfter)
 	if err != nil {
 		return s.failScan(ctx, task, err)
 	}
@@ -235,7 +352,7 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 			if strings.Contains(assetType, "video") {
 				// 视频只进入图片搜索的预览图链路，禁止把视频 content_url 交给设备。
 				assetType = "video_preview"
-				downloadURL = media.PreviewDownloadURL()
+				downloadURL = mediaPreviewURL(media, client.ImageBaseURL)
 			}
 			if (assetType != "image" && assetType != "video_preview") || downloadURL == "" {
 				continue
@@ -262,8 +379,12 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 		LastSuccessAt: time.Now(),
 		LastError:     "",
 	}
+	if task.Mode == "sync" {
+		update.Status = "completed"
+		update.NextRunAt = nil
+	}
 	fetchedCount := currentCount + len(page.Items)
-	shouldContinue := page.HasMore && page.NextNo != "" && fetchedCount < task.InitialLimit
+	shouldContinue := task.Mode != "sync" && page.HasMore && page.NextNo != "" && fetchedCount < task.InitialLimit
 	if shouldContinue {
 		update.Status = "queued"
 		update.CursorValue = page.NextNo
@@ -278,7 +399,7 @@ func (s *Service) RunScan(ctx context.Context, taskID string) error {
 	if shouldContinue && s.enqueuer != nil {
 		return s.enqueuer.EnqueueSourceScan(ctx, task.Id, task.Priority)
 	}
-	if !shouldContinue && s.enqueuer != nil {
+	if !shouldContinue && task.Mode != "sync" && s.enqueuer != nil {
 		return s.enqueuer.EnqueueSourcePrepare(ctx, task.Id)
 	}
 	return nil
@@ -508,7 +629,28 @@ func (s *Service) ListChannels(ctx context.Context, sourceID, keyword string, pa
 	if err = model.OrderDesc(columns.IsPinned).OrderDesc(columns.LastSyncedAt).Page(page, pageSize).Scan(&rows); err != nil {
 		return nil, err
 	}
-	return &SourceChannelPage{Items: rows, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
+	items := make([]SourceChannel, 0, len(rows))
+	for _, row := range rows {
+		item := SourceChannel{SourceChannels: row}
+		noteModel := dao.SourceNotes.Ctx(ctx).Where(dao.SourceNotes.Columns().DataSourceId, row.DataSourceId).Where(dao.SourceNotes.Columns().ChannelId, row.ChannelId)
+		cached, countErr := noteModel.Count()
+		if countErr != nil {
+			return nil, countErr
+		}
+		item.CachedNotes = cached
+		var noteIDs []string
+		if err = noteModel.Fields(dao.SourceNotes.Columns().Id).Scan(&noteIDs); err != nil {
+			return nil, err
+		}
+		if len(noteIDs) > 0 {
+			item.ScannedNotes, err = dao.SearchTaskItems.Ctx(ctx).WhereIn(dao.SearchTaskItems.Columns().SourceNoteId, noteIDs).Fields(dao.SearchTaskItems.Columns().SourceNoteId).Group(dao.SearchTaskItems.Columns().SourceNoteId).Count()
+			if err != nil {
+				return nil, err
+			}
+		}
+		items = append(items, item)
+	}
+	return &SourceChannelPage{Items: items, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
 }
 
 func (s *Service) SetChannelPinned(ctx context.Context, id string, pinned bool) error {
@@ -571,6 +713,31 @@ func mediaDownloadURL(media feiniu.Media, imageBaseURL string) string {
 		return base + "/" + path
 	}
 	return media.DownloadURL()
+}
+
+func mediaPreviewURL(media feiniu.Media, imageBaseURL string) string {
+	base := normalizeBaseURL(imageBaseURL)
+	path := strings.TrimLeft(strings.TrimSpace(media.COSPath), "/")
+	if base != "" && path != "" {
+		return base + "/" + path
+	}
+	return replaceMediaHost(media.PreviewDownloadURL(), base)
+}
+
+func replaceMediaHost(raw, base string) string {
+	if base == "" || strings.TrimSpace(raw) == "" {
+		return raw
+	}
+	target, err := url.Parse(base)
+	if err != nil || target.Host == "" {
+		return raw
+	}
+	value, err := url.Parse(raw)
+	if err != nil || value.Host == "" {
+		return raw
+	}
+	value.Scheme, value.Host = target.Scheme, target.Host
+	return value.String()
 }
 func (s *Service) encrypt(v string) (string, error) {
 	block, err := aes.NewCipher(s.key[:])

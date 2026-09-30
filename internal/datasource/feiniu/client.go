@@ -21,6 +21,18 @@ type Client struct {
 	BaseURL, ImageBaseURL, AppID, AccessKey, SecretKey string
 	HTTPClient                                         *http.Client
 }
+
+// MaxPageSize 是 FeiNiu OpenAPI 的单页契约上限。业务侧的同步目标数可以更大，
+// 但不能把目标数直接作为上游 limit，必须通过 next_no 分页累积。
+const MaxPageSize = 100
+
+func normalizePageLimit(limit int) int {
+	if limit < 1 || limit > MaxPageSize {
+		return MaxPageSize
+	}
+	return limit
+}
+
 type Timestamp struct{ time.Time }
 type StringID string
 
@@ -254,7 +266,7 @@ func responsePreview(data []byte) string {
 }
 
 func (c *Client) Channels(ctx context.Context, limit int, cursor, updatedAfter string) (Page[Channel], error) {
-	q := url.Values{"limit": {strconv.Itoa(limit)}}
+	q := url.Values{"limit": {strconv.Itoa(normalizePageLimit(limit))}}
 	if cursor != "" {
 		q.Set("cursor", cursor)
 	}
@@ -266,7 +278,7 @@ func (c *Client) Channels(ctx context.Context, limit int, cursor, updatedAfter s
 	return out, err
 }
 func (c *Client) Notes(ctx context.Context, channelID int64, limit int, nextNo, updatedAfter string) (Page[Note], error) {
-	q := url.Values{"limit": {strconv.Itoa(limit)}}
+	q := url.Values{"limit": {strconv.Itoa(normalizePageLimit(limit))}}
 	if nextNo != "" {
 		q.Set("next_no", nextNo)
 	}

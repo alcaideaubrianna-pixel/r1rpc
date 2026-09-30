@@ -56,17 +56,9 @@ func newDownloader(allowedHTTPHost string) *Downloader {
 		MaxConnsPerHost:       32,
 		IdleConnTimeout:       90 * time.Second,
 		ResponseHeaderTimeout: 12 * time.Second,
-		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(address)
-			if err != nil {
-				return nil, err
-			}
-			ips, err := safeIPs(ctx, host)
-			if err != nil {
-				return nil, err
-			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
-		},
+		// 目标 URL 已在 validateDownloadURL 中完成 SSRF 校验。这里不能再次对
+		// 代理地址做同样校验，否则常见的内网 HTTP(S)_PROXY 会被误判为受限网络。
+		DialContext:         dialer.DialContext,
 		TLSHandshakeTimeout: 8 * time.Second,
 	}
 	client := &http.Client{

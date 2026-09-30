@@ -14,7 +14,7 @@ import FilesPage from './pages/FilesPage'
 import ImageSearchPage from './pages/ImageSearchPage'
 import ImageSearchDetailPage from './pages/ImageSearchDetailPage'
 import SearchTaskDetailPage from './pages/SearchTaskDetailPage'
-import DataSourcesPage from './pages/DataSourcesPage'
+import DataSourcesPage, { SourceNotesPage } from './pages/DataSourcesPage'
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const loc = useLocation()
@@ -45,6 +45,7 @@ export default function App() {
         <Route path="image-search/:id" element={<SearchTaskDetailPage />} />
         <Route path="image-search/results/:id" element={<ImageSearchDetailPage />} />
         <Route path="data-sources" element={<DataSourcesPage />} />
+        <Route path="data-sources/:sourceId/channels/:channelId/notes" element={<SourceNotesPage />} />
         <Route path="users" element={<UsersPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/overview" replace />} />

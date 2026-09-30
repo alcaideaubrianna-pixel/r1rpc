@@ -92,3 +92,25 @@ func TestMediaDownloadURLPriority(t *testing.T) {
 		t.Fatalf("DownloadURL() = %q, want preview URL", got)
 	}
 }
+
+func TestNormalizePageLimit(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{name: "任务目标超过上游上限", in: 10000, want: 100},
+		{name: "零值使用契约上限", in: 0, want: 100},
+		{name: "负数使用契约上限", in: -1, want: 100},
+		{name: "合法页大小保持", in: 50, want: 50},
+		{name: "上限保持", in: 100, want: 100},
+		{name: "超过上限截断", in: 101, want: 100},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := normalizePageLimit(test.in); got != test.want {
+				t.Fatalf("normalizePageLimit(%d) = %d, want %d", test.in, got, test.want)
+			}
+		})
+	}
+}

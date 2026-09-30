@@ -85,6 +85,53 @@ func (s *Server) registerDataSourceRoutes(mux *http.ServeMux) {
 		}
 		writeJSON(w, 200, result)
 	}))
+	mux.HandleFunc("GET /api/v1/data-sources/{id}/channels/{channelId}/notes", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
+		channelID, err := strconv.ParseInt(r.PathValue("channelId"), 10, 64)
+		if err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		pageSize, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
+		result, err := s.App.DataSources.ListNotes(r.Context(), r.PathValue("id"), channelID, r.URL.Query().Get("q"), page, pageSize)
+		if err != nil {
+			writeError(w, 500, err)
+			return
+		}
+		writeJSON(w, 200, result)
+	}))
+	mux.HandleFunc("POST /api/v1/data-sources/{id}/channels/{channelId}/notes/sync", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
+		channelID, err := strconv.ParseInt(r.PathValue("channelId"), 10, 64)
+		if err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		item, err := s.App.DataSources.CreateScanTask(r.Context(), datasource.ScanTaskInput{DataSourceID: r.PathValue("id"), ChannelID: channelID, ChannelTitle: r.URL.Query().Get("title"), Mode: "sync", InitialLimit: 10000})
+		if err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		writeJSON(w, 202, item)
+	}))
+	mux.HandleFunc("POST /api/v1/data-sources/{id}/channels/{channelId}/note-batches", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
+		channelID, err := strconv.ParseInt(r.PathValue("channelId"), 10, 64)
+		if err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		var input datasource.ScanTaskInput
+		if err = decodeLimitedJSON(w, r, &input); err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		input.DataSourceID, input.ChannelID = r.PathValue("id"), channelID
+		result, err := s.App.DataSources.CreateScanTask(r.Context(), input)
+		if err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		writeJSON(w, 202, result)
+	}))
 	mux.HandleFunc("PATCH /api/v1/source-channels/{id}/pin", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
 		var input struct {
 			Pinned bool `json:"pinned"`
