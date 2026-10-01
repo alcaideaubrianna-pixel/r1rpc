@@ -1,9 +1,18 @@
-# 多阶段构建：前端已预构建并 go:embed 进二进制，这里只编译 Go。
+# Git 部署必须在镜像内构建前端，不能依赖仓库中已有的嵌入产物。
+FROM node:22-alpine AS web-build
+WORKDIR /src
+COPY web/package.json web/package-lock.json ./web/
+RUN npm ci --prefix web
+COPY web ./web
+COPY internal/web/ui ./internal/web/ui
+RUN npm run build --prefix web
+
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=web-build /src/internal/web/ui ./internal/web/ui
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" -o /out/r1rpc-server ./cmd/server
 
 FROM debian:bookworm-slim

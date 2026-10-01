@@ -30,6 +30,7 @@ import (
 type Enqueuer interface {
 	EnqueueSourceScan(context.Context, string, int) error
 	EnqueueSourcePrepare(context.Context, string) error
+	EnqueueSourceItem(context.Context, string, string, string) error
 }
 type Service struct {
 	key      [32]byte

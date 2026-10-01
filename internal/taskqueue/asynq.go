@@ -16,6 +16,7 @@ const (
 	TaskTypeImageDownload = "image:download:v1"
 	TaskTypeSourceScan    = "source:scan:v1"
 	TaskTypeSourcePrepare = "source:prepare:v1"
+	TaskTypeSourceItem    = "source:item:prepare:v1"
 	imageQueue            = "image"
 	analysisQueue         = "image_analysis"
 	downloadQueue         = "image_download"
@@ -32,6 +33,11 @@ type imageDownloadPayload struct {
 }
 type sourceScanPayload struct {
 	TaskID string `json:"taskId"`
+}
+type sourceItemPayload struct {
+	ScanTaskID   string `json:"scanTaskId"`
+	SearchTaskID string `json:"searchTaskId"`
+	NoteID       string `json:"noteId"`
 }
 
 // Enqueuer 将图片业务任务写入 Redis，Payload 只包含数据库任务 ID。
@@ -86,6 +92,18 @@ func (e *Enqueuer) EnqueueSourcePrepare(ctx context.Context, taskID string) erro
 		return err
 	}
 	_, err = e.client.EnqueueContext(ctx, asynq.NewTask(TaskTypeSourcePrepare, payload), asynq.Queue(sourcePrepareQueue), asynq.MaxRetry(5), asynq.Timeout(20*time.Minute), asynq.Unique(10*time.Minute))
+	if errors.Is(err, asynq.ErrDuplicateTask) {
+		return nil
+	}
+	return err
+}
+
+func (e *Enqueuer) EnqueueSourceItem(ctx context.Context, scanTaskID, searchTaskID, noteID string) error {
+	payload, err := json.Marshal(sourceItemPayload{ScanTaskID: scanTaskID, SearchTaskID: searchTaskID, NoteID: noteID})
+	if err != nil {
+		return err
+	}
+	_, err = e.client.EnqueueContext(ctx, asynq.NewTask(TaskTypeSourceItem, payload), asynq.Queue(sourcePrepareQueue), asynq.MaxRetry(5), asynq.Timeout(20*time.Minute), asynq.Unique(30*time.Minute))
 	if errors.Is(err, asynq.ErrDuplicateTask) {
 		return nil
 	}

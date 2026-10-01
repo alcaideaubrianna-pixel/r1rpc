@@ -31,6 +31,58 @@ func (p *Processor) ProcessSourcePrepare(ctx context.Context, task *asynq.Task) 
 	return p.prepareSourceSearch(ctx, payload.TaskID)
 }
 
+func (p *Processor) ProcessSourceItem(ctx context.Context, task *asynq.Task) error {
+	var payload sourceItemPayload
+	if err := json.Unmarshal(task.Payload(), &payload); err != nil || payload.ScanTaskID == "" || payload.NoteID == "" {
+		return fmt.Errorf("无效资料预处理 payload: %w", asynq.SkipRetry)
+	}
+	var scan entity.ChannelScanTasks
+	if err := dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, payload.ScanTaskID).Scan(&scan); err != nil {
+		return err
+	}
+	if scan.Status == "cancelled" || scan.Status == "paused" || scan.Mode == "sync" {
+		return nil
+	}
+	config, _, err := loadSearchConfig(ctx, scan.SearchConfigId)
+	if err != nil {
+		return err
+	}
+	if err := p.createSourceSearchItem(ctx, scan, config, payload.SearchTaskID, payload.NoteID); err != nil {
+		return err
+	}
+	return p.refreshSourceItemProgress(ctx, scan.Id, payload.SearchTaskID)
+}
+
+// refreshSourceItemProgress 汇总资料级任务状态，避免批次任务提前宣告完成。
+func (p *Processor) refreshSourceItemProgress(ctx context.Context, scanTaskID, searchTaskID string) error {
+	cols := dao.SearchTaskItems.Columns()
+	var items []entity.SearchTaskItems
+	if err := dao.SearchTaskItems.Ctx(ctx).Where(cols.SearchTaskId, searchTaskID).Scan(&items); err != nil {
+		return err
+	}
+	completed, failed := 0, 0
+	for _, item := range items {
+		switch item.Status {
+		case "completed", "matched", "filtered":
+			completed++
+		case "failed":
+			failed++
+		}
+	}
+	status := "running"
+	if completed+failed >= len(items) && len(items) > 0 {
+		status = "completed"
+		if failed > 0 {
+			status = "partial_failed"
+		}
+	}
+	if _, err := dao.SearchTasks.Ctx(ctx).Where(dao.SearchTasks.Columns().Id, searchTaskID).Data(do.SearchTasks{Status: status, FailedCount: failed}).Update(); err != nil {
+		return err
+	}
+	_, err := dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, scanTaskID).Data(do.ChannelScanTasks{Status: status}).Update()
+	return err
+}
+
 func (p *Processor) prepareSourceSearch(ctx context.Context, taskID string) error {
 	var scan entity.ChannelScanTasks
 	if err := dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, taskID).Scan(&scan); err != nil {
@@ -90,15 +142,16 @@ func (p *Processor) prepareSourceSearch(ctx context.Context, taskID string) erro
 	}
 	created := 0
 	for _, relation := range relations {
-		if err = p.createSourceSearchItem(ctx, scan, config, searchTaskID, relation.NoteId); err != nil {
+		if err = p.enqueuer.EnqueueSourceItem(ctx, scan.Id, searchTaskID, relation.NoteId); err != nil {
 			return p.markSourcePrepareError(ctx, scan.Id, err)
 		}
 		created++
 	}
 	_, _ = dao.SearchTasks.Ctx(ctx).Where(dao.SearchTasks.Columns().Id, searchTaskID).Data(do.SearchTasks{Status: "running", TotalCount: created, SearchCount: created, ErrorMessage: ""}).Update()
-	status := "completed"
+	// 资料任务已经异步投递，批次本身仍处于准备中，不能提前显示完成。
+	status := "preparing"
 	if scan.Mode == "continuous" {
-		status = "waiting"
+		status = "preparing"
 	}
 	_, err = dao.ChannelScanTasks.Ctx(ctx).Where(dao.ChannelScanTasks.Columns().Id, scan.Id).
 		Data(do.ChannelScanTasks{Status: status, SearchTaskId: searchTaskID, FetchedCount: fetchedCount, SkippedCount: fetchedCount - created, LastError: ""}).Update()

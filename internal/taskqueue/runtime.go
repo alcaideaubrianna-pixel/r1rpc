@@ -67,6 +67,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 	mux.HandleFunc(TaskTypeImageDownload, processor.ProcessImageDownload)
 	mux.HandleFunc(TaskTypeSourceScan, processor.ProcessSourceScan)
 	mux.HandleFunc(TaskTypeSourcePrepare, processor.ProcessSourcePrepare)
+	mux.HandleFunc(TaskTypeSourceItem, processor.ProcessSourceItem)
 	if err := r.server.Start(mux); err != nil {
 		return err
 	}
@@ -126,6 +127,7 @@ func (r *Runtime) recoverSourceScans(ctx context.Context) error {
 	var tasks []entity.ChannelScanTasks
 	if err := dao.ChannelScanTasks.Ctx(ctx).
 		WhereIn(columns.Status, []string{"queued", "waiting", "failed"}).
+		WhereNot(columns.Mode, "sync").
 		WhereLTE(columns.NextRunAt, time.Now()).
 		OrderDesc(columns.Priority).OrderAsc(columns.NextRunAt).
 		Limit(500).Scan(&tasks); err != nil {
@@ -137,27 +139,10 @@ func (r *Runtime) recoverSourceScans(ctx context.Context) error {
 		}
 	}
 	var preparing []entity.ChannelScanTasks
-	if err := dao.ChannelScanTasks.Ctx(ctx).Where(columns.Status, "preparing").OrderAsc(columns.UpdatedAt).Limit(100).Scan(&preparing); err != nil {
+	if err := dao.ChannelScanTasks.Ctx(ctx).Where(columns.Status, "preparing").WhereNot(columns.Mode, "sync").OrderAsc(columns.UpdatedAt).Limit(100).Scan(&preparing); err != nil {
 		return err
 	}
 	for _, task := range preparing {
-		if err := r.enqueuer.EnqueueSourcePrepare(ctx, task.Id); err != nil {
-			return err
-		}
-	}
-	var legacy []entity.ChannelScanTasks
-	if err := dao.ChannelScanTasks.Ctx(ctx).
-		Where(columns.Status, "completed").
-		Where(columns.ImageSearchRequestId, "").
-		Where(columns.SearchTaskId, "").
-		OrderAsc(columns.UpdatedAt).Limit(100).Scan(&legacy); err != nil {
-		return err
-	}
-	for _, task := range legacy {
-		if _, err := dao.ChannelScanTasks.Ctx(ctx).Where(columns.Id, task.Id).
-			Data(do.ChannelScanTasks{Status: "preparing"}).Update(); err != nil {
-			return err
-		}
 		if err := r.enqueuer.EnqueueSourcePrepare(ctx, task.Id); err != nil {
 			return err
 		}
