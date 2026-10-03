@@ -46,10 +46,13 @@ services:
     volumes:
       - ./config.docker.yaml:/app/config.yaml:ro
       - r1rpc-uploads:/app/data/uploads
+      - r1rpc-logs:/app/data/logs
     environment:
       APP_NAME: ${APP_NAME:-r1rpc}
       SERVER_ID: ${SERVER_ID:-r1rpc-local-1}
       HTTP_ADDR: ":9876"
+      LOG_DIR: ${LOG_DIR:-/app/data/logs}
+      LOG_MAX_DIR_MB: ${LOG_MAX_DIR_MB:-200}
       JWT_SECRET: ${JWT_SECRET:-r1rpc-local-docker-secret-change-me}
       BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-123456}
@@ -69,8 +72,14 @@ services:
       retries: 12
       start_period: 10s
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
 volumes:
   r1rpc-mysql-data:
   r1rpc-redis-data:
   r1rpc-uploads:
+  r1rpc-logs:

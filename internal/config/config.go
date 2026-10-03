@@ -28,6 +28,8 @@ var yamlToEnvKey = []struct {
 	{"server", "http_addr", "HTTP_ADDR"},
 	{"server", "jwt_secret", "JWT_SECRET"},
 	{"server", "time_zone", "TIME_ZONE"},
+	{"logging", "dir", "LOG_DIR"},
+	{"logging", "max_dir_mb", "LOG_MAX_DIR_MB"},
 	{"admin", "username", "BOOTSTRAP_ADMIN_USERNAME"},
 	{"admin", "password", "BOOTSTRAP_ADMIN_PASSWORD"},
 	{"mysql", "host", "MYSQL_HOST"},
@@ -102,6 +104,7 @@ type Config struct {
 	MySQL                    MySQLConfig
 	Redis                    RedisConfig
 	Storage                  StorageConfig
+	Logging                  LoggingConfig
 }
 
 type RedisConfig struct {
@@ -136,6 +139,11 @@ type StorageConfig struct {
 	PathStyle bool
 	AccessKey string
 	SecretKey string
+}
+
+type LoggingConfig struct {
+	Dir      string
+	MaxDirMB int
 }
 
 func Load() (Config, error) {
@@ -200,6 +208,10 @@ func Load() (Config, error) {
 			AccessKey: getString(values, "STORAGE_S3_ACCESS_KEY", ""),
 			SecretKey: getString(values, "STORAGE_S3_SECRET_KEY", ""),
 		},
+		Logging: LoggingConfig{
+			Dir:      getString(values, "LOG_DIR", "./data/logs"),
+			MaxDirMB: getInt(values, "LOG_MAX_DIR_MB", 200),
+		},
 	}
 
 	// 对外 RPC 调用的鉴权（none/apikey）已下沉到「分组」级别，不再走全局配置。
@@ -218,6 +230,12 @@ func Load() (Config, error) {
 	}
 	if strings.TrimSpace(cfg.MySQL.DB) == "" {
 		return Config{}, fmt.Errorf("%s 中必须配置 MYSQL_DB", path)
+	}
+	if strings.TrimSpace(cfg.Logging.Dir) == "" {
+		return Config{}, fmt.Errorf("%s 中 LOG_DIR 不能为空", path)
+	}
+	if cfg.Logging.MaxDirMB < 1 {
+		return Config{}, fmt.Errorf("%s 中 LOG_MAX_DIR_MB 必须大于 0", path)
 	}
 	if cfg.RawRetentionDays <= 0 {
 		cfg.RawRetentionDays = 3

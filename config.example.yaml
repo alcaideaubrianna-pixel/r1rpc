@@ -9,6 +9,10 @@ server:
   jwt_secret: ""            # 必填：换成你自己的随机长串
   time_zone: "Asia/Shanghai"
 
+logging:
+  dir: "./data/logs"
+  max_dir_mb: 200            # 日志目录总容量，超过后按最旧文件清理
+
 admin:                       # 首次启动自动创建的后台管理员账号
   username: "admin"
   password: ""              # 必填：换成强密码

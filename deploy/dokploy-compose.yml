@@ -52,6 +52,8 @@ services:
       SERVER_ID: ${SERVER_ID:-r1rpc-dokploy-1}
       HTTP_ADDR: ":9876"
       TIME_ZONE: ${TZ:-Asia/Shanghai}
+      LOG_DIR: ${LOG_DIR:-/app/data/logs}
+      LOG_MAX_DIR_MB: ${LOG_MAX_DIR_MB:-200}
       JWT_SECRET: ${JWT_SECRET:?请在 Dokploy 配置 JWT_SECRET}
       BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?请在 Dokploy 配置 BOOTSTRAP_ADMIN_PASSWORD}
@@ -75,6 +77,7 @@ services:
       OCR_LANGUAGES: ${OCR_LANGUAGES:-chi_sim+eng}
     volumes:
       - uploads_data:/app/data/uploads
+      - logs_data:/app/data/logs
     expose:
       - "9876"
     healthcheck:
@@ -84,11 +87,17 @@ services:
       retries: 10
       start_period: 30s
     networks: [r1rpc]
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
 volumes:
   mysql_data:
   redis_data:
   uploads_data:
+  logs_data:
 
 networks:
   r1rpc:

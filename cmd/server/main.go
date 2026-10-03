@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
 	"r1rpc/internal/app"
 	"r1rpc/internal/config"
+	"r1rpc/internal/observability"
 	"r1rpc/internal/persistence"
 	"r1rpc/internal/store"
 	"r1rpc/internal/taskqueue"
@@ -28,6 +30,23 @@ func main() {
 	if err := cfg.ApplyTimeZone(); err != nil {
 		g.Log().Fatalf(context.Background(), "应用时区失败: %+v", err)
 	}
+	logManager, err := observability.ConfigureLogging(cfg.Logging.Dir, cfg.Logging.MaxDirMB)
+	if err != nil {
+		g.Log().Fatalf(context.Background(), "初始化运行日志失败: %+v", err)
+	}
+	defer func() {
+		if closeErr := logManager.Close(); closeErr != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "关闭运行日志失败: %v\n", closeErr)
+		}
+	}()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			g.Log().Error(context.Background(), g.Map{
+				"event": "server_panic", "panic": fmt.Sprint(recovered), "stack": string(debug.Stack()),
+			})
+			panic(recovered)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -93,10 +112,13 @@ func main() {
 	accessURL, port := httpAccessURL(cfg.HTTPAddr)
 	g.Log().Info(context.Background(), g.Map{
 		"event":          "server_start",
+		"server_id":      cfg.ServerID,
 		"listen_address": cfg.HTTPAddr,
 		"access_url":     accessURL,
 		"port":           port,
 		"time_zone":      cfg.TimeZone,
+		"log_file":       logManager.CurrentFile(),
+		"log_max_dir_mb": cfg.Logging.MaxDirMB,
 	}, fmt.Sprintf("HTTP 服务已启动，访问地址: %s", accessURL))
 	g.Log().Info(context.Background(), g.Map{"event": "invoke_auth", "mode": "group-scoped"})
 	serveDone := make(chan error, 1)
@@ -105,6 +127,7 @@ func main() {
 	}()
 	select {
 	case <-runCtx.Done():
+		g.Log().Info(context.Background(), g.Map{"event": "server_shutdown", "reason": runCtx.Err().Error()})
 		if closeErr := queueRuntime.Close(); closeErr != nil {
 			g.Log().Errorf(context.Background(), "关闭图片任务队列失败: %+v", closeErr)
 		}
@@ -127,6 +150,7 @@ func main() {
 			g.Log().Errorf(context.Background(), "关闭应用失败: %+v", closeErr)
 		}
 	case err := <-serveDone:
+		g.Log().Error(context.Background(), g.Map{"event": "server_stopped", "error": fmt.Sprint(err)})
 		if closeErr := queueRuntime.Close(); closeErr != nil {
 			g.Log().Errorf(context.Background(), "关闭图片任务队列失败: %+v", closeErr)
 		}
