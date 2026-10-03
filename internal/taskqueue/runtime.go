@@ -157,6 +157,7 @@ func (r *Runtime) recoverAPI(ctx context.Context) error {
 	// 正常设备工作流最长 5 分钟，超过 6 分钟视为失去执行者并重新排队。
 	if _, err := dao.ImageJobs.Ctx(ctx).
 		Where(columns.Status, "running").
+		WhereNotLike(columns.Stage, "material_%").
 		WhereLT(columns.UpdatedAt, time.Now().Add(-6*time.Minute)).
 		Data(do.ImageJobs{Status: "retry_wait", Stage: "retry_wait", ErrorCode: "STALE_RUNNING", ErrorMessage: "执行节点中断，任务已自动恢复"}).Update(); err != nil {
 		return err
@@ -164,6 +165,7 @@ func (r *Runtime) recoverAPI(ctx context.Context) error {
 	var jobs []entity.ImageJobs
 	if err := dao.ImageJobs.Ctx(ctx).
 		WhereIn(columns.Status, []string{"created", "queued", "retry_wait"}).
+		WhereNotLike(columns.Stage, "material_%").
 		OrderAsc(columns.CreatedAt).Limit(1000).Scan(&jobs); err != nil {
 		return err
 	}

@@ -33,7 +33,26 @@ func (p *Processor) ProcessImageJob(ctx context.Context, task *asynq.Task) error
 	if err := json.Unmarshal(task.Payload(), &payload); err != nil || strings.TrimSpace(payload.JobID) == "" {
 		return fmt.Errorf("无效图片任务 payload: %w", asynq.SkipRetry)
 	}
-	job, asset, err := p.loadJob(ctx, payload.JobID)
+	job, _, err := p.loadJob(ctx, payload.JobID)
+	if err != nil {
+		return err
+	}
+	if job.Status == "completed" || job.Status == "failed" || job.Status == "cancelled" || job.Status == "paused" {
+		return nil
+	}
+	if strings.HasPrefix(job.Stage, "material_") {
+		return nil
+	}
+	workflow, err := p.acquireDeviceWorkflow(ctx)
+	if err != nil {
+		return p.markRetry(ctx, payload.JobID, "DEVICE_UNAVAILABLE", err)
+	}
+	defer p.app.Hub.ReleaseWorkflowLease(workflow)
+	return p.processImageJobWithWorkflow(ctx, payload.JobID, workflow, false)
+}
+
+func (p *Processor) processImageJobWithWorkflow(ctx context.Context, jobID string, workflow *rpc.WorkflowLease, material bool) error {
+	job, asset, err := p.loadJob(ctx, jobID)
 	if err != nil {
 		return err
 	}
@@ -43,12 +62,13 @@ func (p *Processor) ProcessImageJob(ctx context.Context, task *asynq.Task) error
 	if job.Source == "image_search" && (job.Stage == "response_received" || job.Stage == "analyzing") {
 		return p.enqueuer.EnqueueImageAnalysis(ctx, job.Id)
 	}
-	workflow, err := p.acquireDeviceWorkflow(ctx)
-	if err != nil {
-		return p.markRetry(ctx, job.Id, "DEVICE_UNAVAILABLE", err)
+	uploadingStage := "uploading_to_device"
+	searchingStage := "searching"
+	if material {
+		uploadingStage = "material_uploading"
+		searchingStage = "material_searching"
 	}
-	defer p.app.Hub.ReleaseWorkflowLease(workflow)
-	attempt, err := p.markRunning(ctx, job.Id, "uploading_to_device")
+	attempt, err := p.markRunning(ctx, job.Id, uploadingStage)
 	if err != nil {
 		return err
 	}
@@ -66,7 +86,7 @@ func (p *Processor) ProcessImageJob(ctx context.Context, task *asynq.Task) error
 		Timeout: 60,
 	})
 	if err != nil {
-		return p.markRetry(ctx, job.Id, "DEVICE_UPLOAD_FAILED", err)
+		return p.markRetryMode(ctx, job.Id, "DEVICE_UPLOAD_FAILED", err, material)
 	}
 	var uploadResponse struct {
 		UploadHandle string `json:"uploadHandle"`
@@ -75,7 +95,7 @@ func (p *Processor) ProcessImageJob(ctx context.Context, task *asynq.Task) error
 		_ = p.markFailed(ctx, job.Id, "UPLOAD_HANDLE_INVALID", "设备未返回有效 uploadHandle")
 		return fmt.Errorf("设备未返回有效 uploadHandle: %w", asynq.SkipRetry)
 	}
-	if err := p.markSearching(ctx, job.Id, clientID, uploadRequestID, uploadResponse.UploadHandle); err != nil {
+	if err := p.markSearching(ctx, job.Id, clientID, uploadRequestID, uploadResponse.UploadHandle, searchingStage); err != nil {
 		return err
 	}
 
@@ -90,7 +110,7 @@ func (p *Processor) ProcessImageJob(ctx context.Context, task *asynq.Task) error
 		Timeout: 60,
 	})
 	if err != nil {
-		return p.markRetry(ctx, job.Id, "DEVICE_SEARCH_FAILED", err)
+		return p.markRetryMode(ctx, job.Id, "DEVICE_SEARCH_FAILED", err, material)
 	}
 	if job.Source == "image_search" {
 		if err := p.markResponseReceived(ctx, job.Id, searchRequestID, search.Payload); err != nil {
@@ -166,9 +186,9 @@ func (p *Processor) markRunning(ctx context.Context, jobID, stage string) (int, 
 	return value.Int(), nil
 }
 
-func (p *Processor) markSearching(ctx context.Context, jobID, clientID, requestID, handle string) error {
+func (p *Processor) markSearching(ctx context.Context, jobID, clientID, requestID, handle, stage string) error {
 	_, err := dao.ImageJobs.Ctx(ctx).Where(dao.ImageJobs.Columns().Id, jobID).Data(do.ImageJobs{
-		Stage: "searching", AssignedClientId: clientID, UploadRequestId: requestID, UploadHandle: handle,
+		Stage: stage, AssignedClientId: clientID, UploadRequestId: requestID, UploadHandle: handle,
 	}).Update()
 	return err
 }
@@ -185,6 +205,10 @@ func (p *Processor) markCompleted(ctx context.Context, jobID, requestID string, 
 }
 
 func (p *Processor) markRetry(ctx context.Context, jobID, code string, cause error) error {
+	return p.markRetryMode(ctx, jobID, code, cause, false)
+}
+
+func (p *Processor) markRetryMode(ctx context.Context, jobID, code string, cause error, material bool) error {
 	retried, hasRetried := asynq.GetRetryCount(ctx)
 	maxRetry, hasMaxRetry := asynq.GetMaxRetry(ctx)
 	if hasRetried && hasMaxRetry && retried >= maxRetry {
@@ -195,8 +219,12 @@ func (p *Processor) markRetry(ctx context.Context, jobID, code string, cause err
 	}
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
+	stage := "retry_wait"
+	if material {
+		stage = "material_retry_wait"
+	}
 	_, updateErr := dao.ImageJobs.Ctx(persistCtx).Where(dao.ImageJobs.Columns().Id, jobID).Data(do.ImageJobs{
-		Status: "retry_wait", Stage: "retry_wait", ErrorCode: code, ErrorMessage: cause.Error(),
+		Status: "retry_wait", Stage: stage, ErrorCode: code, ErrorMessage: cause.Error(),
 	}).Update()
 	if updateErr != nil {
 		return errors.Join(cause, updateErr)

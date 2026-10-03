@@ -176,5 +176,49 @@ func (p *Processor) refreshDecisionRequest(ctx context.Context, requestID string
 			Status: status, MatchedCount: matched, NotMatchedCount: notMatched,
 			RunningCount: active, FailedCount: failed,
 		}).Update()
-	return err
+	if err != nil || active > 0 {
+		return err
+	}
+	return p.finishSourceMaterial(ctx, requestID, status, matched, groups)
+}
+
+func (p *Processor) finishSourceMaterial(ctx context.Context, requestID, requestStatus string, matched int, groups []entity.ImageSearchGroups) error {
+	columns := dao.SearchTaskItems.Columns()
+	var taskItem entity.SearchTaskItems
+	if err := dao.SearchTaskItems.Ctx(ctx).Where(columns.ImageSearchRequestId, requestID).Scan(&taskItem); err != nil {
+		return err
+	}
+	if taskItem.Id == "" {
+		return nil
+	}
+	itemStatus := "completed"
+	if requestStatus == "failed" || requestStatus == "partial_failed" {
+		itemStatus = "failed"
+	}
+	bestScore := 0.0
+	for _, group := range groups {
+		if group.BestScore > bestScore {
+			bestScore = group.BestScore
+		}
+	}
+	if _, err := dao.SearchTaskItems.Ctx(ctx).Where(columns.Id, taskItem.Id).Data(do.SearchTaskItems{
+		Status: itemStatus, Matched: boolInt(matched > 0), BestScore: bestScore,
+	}).Update(); err != nil {
+		return err
+	}
+	var searchTask entity.SearchTasks
+	if err := dao.SearchTasks.Ctx(ctx).Where(dao.SearchTasks.Columns().Id, taskItem.SearchTaskId).Scan(&searchTask); err != nil {
+		return err
+	}
+	if searchTask.Id == "" || searchTask.SourceTaskId == "" {
+		return nil
+	}
+	return p.refreshSourceItemProgress(ctx, searchTask.SourceTaskId, searchTask.Id)
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }

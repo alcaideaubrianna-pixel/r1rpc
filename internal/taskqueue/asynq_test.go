@@ -3,6 +3,7 @@ package taskqueue
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/hibiken/asynq"
 )
@@ -18,6 +19,12 @@ func TestImageTaskPayloadContainsOnlyJobID(t *testing.T) {
 	}
 	if len(object) != 1 || object["jobId"] != "job-1" {
 		t.Fatalf("payload=%v", object)
+	}
+}
+
+func TestSourceMaterialTimeout(t *testing.T) {
+	if sourceMaterialTimeout != 100*time.Second {
+		t.Fatalf("资料搜索超时 = %s, want 100s", sourceMaterialTimeout)
 	}
 }
 

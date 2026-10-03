@@ -20,4 +20,6 @@ type CreateImageSearchRequest struct {
 	RequestedByUserID  int64
 	RequestedBySubject string
 	Groups             []ImageSearchGroup
+	DeferQueue         bool
+	InitialJobStage    string
 }

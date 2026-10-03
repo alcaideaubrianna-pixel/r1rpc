@@ -21,7 +21,7 @@ func (s *Service) Create(ctx context.Context, in input.CreateImageSearchRequest)
 		return nil, err
 	}
 	if existing, err := s.findByExternalID(ctx, in.Source, in.ExternalID); err != nil || existing != nil {
-		if err == nil && existing != nil {
+		if err == nil && existing != nil && !in.DeferQueue {
 			err = s.enqueuePendingRequest(ctx, existing.ID)
 		}
 		return existing, err
@@ -47,7 +47,7 @@ func (s *Service) Create(ctx context.Context, in input.CreateImageSearchRequest)
 			return gerror.Wrap(err, "创建图片检索请求失败")
 		}
 		for groupIndex, group := range in.Groups {
-			jobs, err := s.createGroup(ctx, tx, requestID, groupIndex, in.Priority, group)
+			jobs, err := s.createGroup(ctx, tx, requestID, groupIndex, in.Priority, in.InitialJobStage, group)
 			if err != nil {
 				return err
 			}
@@ -61,8 +61,10 @@ func (s *Service) Create(ctx context.Context, in input.CreateImageSearchRequest)
 		}
 		return nil, err
 	}
-	if err := s.enqueueJobs(ctx, requestID, pendingJobs); err != nil {
-		return result, err
+	if !in.DeferQueue {
+		if err := s.enqueueJobs(ctx, requestID, pendingJobs); err != nil {
+			return result, err
+		}
 	}
 	created, err := s.GetOne(ctx, requestID)
 	if err != nil {
@@ -77,6 +79,7 @@ func (s *Service) createGroup(
 	requestID string,
 	groupIndex int,
 	priority int,
+	initialJobStage string,
 	in input.ImageSearchGroup,
 ) ([]pendingJob, error) {
 	policy, err := json.Marshal(in.MatchPolicy)
@@ -84,6 +87,9 @@ func (s *Service) createGroup(
 		return nil, gerror.WrapCode(gcode.CodeInvalidParameter, err, "匹配策略无效")
 	}
 	groupID := guid.S()
+	if strings.TrimSpace(initialJobStage) == "" {
+		initialJobStage = statusCreated
+	}
 	if _, err := tx.Model(dao.ImageSearchGroups.Table()).Ctx(ctx).Data(do.ImageSearchGroups{
 		Id: groupID, RequestId: requestID, ExternalId: nullable(in.ExternalID),
 		SubjectUserId: strings.TrimSpace(in.SubjectUserID), Status: statusCreated,
@@ -106,7 +112,7 @@ func (s *Service) createGroup(
 		})
 		if _, err := tx.Model(dao.ImageJobs.Table()).Ctx(ctx).Data(do.ImageJobs{
 			Id: jobID, SourceAssetId: assetID, Source: "image_search",
-			Status: statusCreated, Stage: statusCreated, Priority: priority, InputJson: string(jobInput),
+			Status: statusCreated, Stage: initialJobStage, Priority: priority, InputJson: string(jobInput),
 		}).Insert(); err != nil {
 			return nil, gerror.Wrap(err, "创建图片检索设备任务失败")
 		}

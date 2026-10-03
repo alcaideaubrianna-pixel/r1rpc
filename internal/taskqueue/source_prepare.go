@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -22,6 +23,8 @@ import (
 	"github.com/gogf/gf/v2/util/guid"
 	"github.com/hibiken/asynq"
 )
+
+const sourceMaterialTimeout = 100 * time.Second
 
 func (p *Processor) ProcessSourcePrepare(ctx context.Context, task *asynq.Task) error {
 	var payload sourceScanPayload
@@ -47,8 +50,14 @@ func (p *Processor) ProcessSourceItem(ctx context.Context, task *asynq.Task) err
 	if err != nil {
 		return err
 	}
-	if err := p.createSourceSearchItem(ctx, scan, config, payload.SearchTaskID, payload.NoteID); err != nil {
+	itemID, requestID, err := p.createSourceSearchItem(ctx, scan, config, payload.SearchTaskID, payload.NoteID)
+	if err != nil {
 		return err
+	}
+	if requestID != "" {
+		if err = p.processSourceMaterial(ctx, itemID, requestID); err != nil {
+			return err
+		}
 	}
 	return p.refreshSourceItemProgress(ctx, scan.Id, payload.SearchTaskID)
 }
@@ -230,43 +239,43 @@ func loadSearchConfig(ctx context.Context, id string) (entity.SearchConfigs, str
 	return config, string(raw), nil
 }
 
-func (p *Processor) createSourceSearchItem(ctx context.Context, scan entity.ChannelScanTasks, config entity.SearchConfigs, searchTaskID, noteID string) error {
+func (p *Processor) createSourceSearchItem(ctx context.Context, scan entity.ChannelScanTasks, config entity.SearchConfigs, searchTaskID, noteID string) (string, string, error) {
 	var note entity.SourceNotes
 	if err := dao.SourceNotes.Ctx(ctx).Where(dao.SourceNotes.Columns().Id, noteID).Scan(&note); err != nil {
-		return err
+		return "", "", err
 	}
 	itemID := guid.S()
 	_, err := dao.SearchTaskItems.Ctx(ctx).Data(do.SearchTaskItems{Id: itemID, SearchTaskId: searchTaskID, SourceNoteId: note.Id, ExternalId: note.ExternalNoteId, Title: note.Title, Status: "preparing", PreprocessStatus: "running", FilterStatus: "pending"}).InsertIgnore()
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	var item entity.SearchTaskItems
 	itemColumns := dao.SearchTaskItems.Columns()
 	if err = dao.SearchTaskItems.Ctx(ctx).Where(itemColumns.SearchTaskId, searchTaskID).Where(itemColumns.SourceNoteId, note.Id).Scan(&item); err != nil {
-		return err
+		return "", "", err
 	}
 	itemID = item.Id
 	if item.ImageSearchRequestId != "" {
-		return nil
+		return itemID, item.ImageSearchRequestId, nil
 	}
 	prepared, err := p.prepareNoteImages(ctx, scan.DataSourceId, note.Id, config)
 	if err != nil {
 		_, _ = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "failed", PreprocessStatus: "failed", ErrorMessage: err.Error()}).Update()
-		return nil
+		return itemID, "", nil
 	}
 	if len(prepared.Items) == 0 {
 		if prepared.Blocked > 0 && prepared.Failed == 0 {
 			_, _ = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{
 				Status: "filtered", PreprocessStatus: "completed", FilterStatus: "blocked", FilterReason: "全部图片命中 OCR 屏蔽关键字",
 			}).Update()
-			return nil
+			return itemID, "", nil
 		}
 		message := "资料没有可用图片"
 		if prepared.Failed > 0 {
 			message = fmt.Sprintf("%d 张图片下载或 OCR 失败", prepared.Failed)
 		}
 		_, _ = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "failed", PreprocessStatus: "failed", ErrorMessage: message}).Update()
-		return nil
+		return itemID, "", nil
 	}
 	priority := scan.Priority
 	if priority < -10 {
@@ -282,17 +291,88 @@ func (p *Processor) createSourceSearchItem(ctx context.Context, scan entity.Chan
 			ExternalID: note.ExternalNoteId, Images: prepared.Items,
 			MatchPolicy: map[string]any{"scoreThreshold": config.ScoreThreshold, "maxPHashDistance": config.MaxPhashDistance, "maxDHashDistance": config.MaxDhashDistance, "maxAHashDistance": config.MaxAhashDistance, "maxCandidates": config.MaxCandidates},
 		}},
+		DeferQueue: true, InitialJobStage: "material_queued",
 	})
 	if err != nil {
 		_, _ = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "failed", ErrorMessage: err.Error()}).Update()
-		return nil
+		return itemID, "", nil
 	}
 	filterReason := ""
 	if prepared.Blocked > 0 {
 		filterReason = fmt.Sprintf("OCR 已屏蔽 %d 张图片", prepared.Blocked)
 	}
-	_, err = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "running", PreprocessStatus: "completed", FilterStatus: "passed", FilterReason: filterReason, ImageSearchRequestId: request.ID, ErrorMessage: ""}).Update()
-	return err
+	_, err = dao.SearchTaskItems.Ctx(ctx).Where(dao.SearchTaskItems.Columns().Id, itemID).Data(do.SearchTaskItems{Status: "queued", PreprocessStatus: "completed", FilterStatus: "passed", FilterReason: filterReason, ImageSearchRequestId: request.ID, ErrorMessage: ""}).Update()
+	return itemID, request.ID, err
+}
+
+func (p *Processor) processSourceMaterial(ctx context.Context, itemID, requestID string) error {
+	workflow, err := p.acquireDeviceWorkflow(ctx)
+	if err != nil {
+		return p.markSourceMaterialRetry(ctx, itemID, err)
+	}
+	defer p.app.Hub.ReleaseWorkflowLease(workflow)
+
+	materialCtx, cancel := context.WithTimeout(ctx, sourceMaterialTimeout)
+	defer cancel()
+	itemColumns := dao.SearchTaskItems.Columns()
+	if _, err = dao.SearchTaskItems.Ctx(materialCtx).Where(itemColumns.Id, itemID).
+		Data(do.SearchTaskItems{Status: "running", ErrorMessage: ""}).Update(); err != nil {
+		return err
+	}
+	jobIDs, err := sourceMaterialJobIDs(materialCtx, requestID)
+	if err != nil {
+		return err
+	}
+	for _, jobID := range jobIDs {
+		if err = p.processImageJobWithWorkflow(materialCtx, jobID, workflow, true); err != nil {
+			return p.markSourceMaterialRetry(ctx, itemID, err)
+		}
+	}
+	return nil
+}
+
+func sourceMaterialJobIDs(ctx context.Context, requestID string) ([]string, error) {
+	groupColumns := dao.ImageSearchGroups.Columns()
+	var groups []entity.ImageSearchGroups
+	if err := dao.ImageSearchGroups.Ctx(ctx).Fields(groupColumns.Id).
+		Where(groupColumns.RequestId, requestID).Scan(&groups); err != nil {
+		return nil, err
+	}
+	groupIDs := make([]string, 0, len(groups))
+	for _, group := range groups {
+		groupIDs = append(groupIDs, group.Id)
+	}
+	if len(groupIDs) == 0 {
+		return nil, nil
+	}
+	itemColumns := dao.ImageSearchItems.Columns()
+	var items []entity.ImageSearchItems
+	if err := dao.ImageSearchItems.Ctx(ctx).Fields(itemColumns.JobId).
+		WhereIn(itemColumns.GroupId, groupIDs).OrderAsc(itemColumns.Ordinal).Scan(&items); err != nil {
+		return nil, err
+	}
+	jobIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		jobIDs = append(jobIDs, item.JobId)
+	}
+	return jobIDs, nil
+}
+
+func (p *Processor) markSourceMaterialRetry(ctx context.Context, itemID string, cause error) error {
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	status := "retry_wait"
+	retried, hasRetried := asynq.GetRetryCount(ctx)
+	maxRetry, hasMaxRetry := asynq.GetMaxRetry(ctx)
+	if hasRetried && hasMaxRetry && retried >= maxRetry {
+		status = "failed"
+	}
+	_, updateErr := dao.SearchTaskItems.Ctx(persistCtx).Where(dao.SearchTaskItems.Columns().Id, itemID).
+		Data(do.SearchTaskItems{Status: status, ErrorMessage: cause.Error()}).Update()
+	if updateErr != nil {
+		return errors.Join(cause, updateErr)
+	}
+	return cause
 }
 
 func sourceSearchTaskID(scan entity.ChannelScanTasks) string {

@@ -125,7 +125,15 @@ func (p *Processor) finishDownloadStageIfReady(ctx context.Context, jobID string
 		return err
 	}
 	if len(candidates) == 0 {
-		return nil
+		var job entity.ImageJobs
+		if err := dao.ImageJobs.Ctx(ctx).Where(dao.ImageJobs.Columns().Id, jobID).Scan(&job); err != nil {
+			return err
+		}
+		var item entity.ImageSearchItems
+		if err := dao.ImageSearchItems.Ctx(ctx).Where(dao.ImageSearchItems.Columns().JobId, jobID).Scan(&item); err != nil {
+			return err
+		}
+		return p.finalizeAnalysis(ctx, job, item, bestCandidate{})
 	}
 	ids := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
