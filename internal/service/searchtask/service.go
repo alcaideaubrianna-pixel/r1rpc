@@ -3,6 +3,7 @@ package searchtask
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,12 @@ type IndependentItem struct {
 	BestScore            float64   `json:"bestScore"`
 	ErrorMessage         string    `json:"errorMessage"`
 	DurationMS           int64     `json:"durationMs"`
+	TaskTitle            string    `json:"taskTitle"`
+	SourceType           string    `json:"sourceType"`
+	ChannelID            int64     `json:"channelId"`
+	ChannelTitle         string    `json:"channelTitle"`
+	DataSourceID         string    `json:"dataSourceId"`
+	DataSourceName       string    `json:"dataSourceName"`
 	CreatedAt            time.Time `json:"createdAt"`
 	UpdatedAt            time.Time `json:"updatedAt"`
 }
@@ -219,7 +226,7 @@ func (s *Service) ListItems(ctx context.Context, taskID string, page, pageSize i
 	return &ItemPage{Items: rows, Task: task, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
 }
 
-func (s *Service) ListIndependentItems(ctx context.Context, page, pageSize int) (*IndependentItemPage, error) {
+func (s *Service) ListIndependentItems(ctx context.Context, page, pageSize int, query string) (*IndependentItemPage, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -228,6 +235,17 @@ func (s *Service) ListIndependentItems(ctx context.Context, page, pageSize int) 
 	}
 	columns := dao.SearchTaskItems.Columns()
 	model := dao.SearchTaskItems.Ctx(ctx)
+	query = strings.TrimSpace(query)
+	if query != "" {
+		noteIDs, queryErr := findNoteIDs(ctx, query)
+		if queryErr != nil {
+			return nil, queryErr
+		}
+		model = model.WhereLike(columns.ExternalId, "%"+query+"%")
+		if len(noteIDs) > 0 {
+			model = model.WhereOrIn(columns.SourceNoteId, noteIDs)
+		}
+	}
 	total, err := model.Count()
 	if err != nil {
 		return nil, err
@@ -250,6 +268,14 @@ func (s *Service) ListIndependentItems(ctx context.Context, page, pageSize int) 
 	if err != nil {
 		return nil, err
 	}
+	tasks, err := loadTasks(ctx, rows)
+	if err != nil {
+		return nil, err
+	}
+	channels, dataSources, err := loadSources(ctx, notes)
+	if err != nil {
+		return nil, err
+	}
 	items := make([]IndependentItem, 0, len(rows))
 	for _, row := range rows {
 		item := IndependentItem{
@@ -262,9 +288,21 @@ func (s *Service) ListIndependentItems(ctx context.Context, page, pageSize int) 
 		}
 		if note, ok := notes[row.SourceNoteId]; ok {
 			item.PlainText = note.PlainText
+			item.ChannelID = note.ChannelId
+			item.DataSourceID = note.DataSourceId
 			if item.ExternalID == "" {
 				item.ExternalID = note.ExternalNoteId
 			}
+			if channel, exists := channels[sourceChannelKey(note.DataSourceId, note.ChannelId)]; exists {
+				item.ChannelTitle = channel.Title
+			}
+			if source, exists := dataSources[note.DataSourceId]; exists {
+				item.DataSourceName = source.Name
+			}
+		}
+		if task, ok := tasks[row.SearchTaskId]; ok {
+			item.TaskTitle = task.Title
+			item.SourceType = task.SourceType
 		}
 		if row.ImageSearchRequestId != "" {
 			if err = fillImageProgress(ctx, &item); err != nil {
@@ -279,6 +317,21 @@ func (s *Service) ListIndependentItems(ctx context.Context, page, pageSize int) 
 		items = append(items, item)
 	}
 	return &IndependentItemPage{Items: items, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
+}
+
+func findNoteIDs(ctx context.Context, query string) ([]string, error) {
+	columns := dao.SourceNotes.Columns()
+	var notes []entity.SourceNotes
+	model := dao.SourceNotes.Ctx(ctx).Fields(columns.Id).WhereLike(columns.ExternalNoteId, "%"+query+"%").
+		WhereOrLike(columns.NoteCode, "%"+query+"%").WhereOrLike(columns.Id, "%"+query+"%")
+	if err := model.Scan(&notes); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(notes))
+	for _, note := range notes {
+		ids = append(ids, note.Id)
+	}
+	return ids, nil
 }
 
 func uniqueTaskIDs(rows []entity.SearchTaskItems) []string {
@@ -311,6 +364,64 @@ func loadNotes(ctx context.Context, rows []entity.SearchTaskItems) (map[string]e
 		result[note.Id] = note
 	}
 	return result, nil
+}
+
+func loadTasks(ctx context.Context, rows []entity.SearchTaskItems) (map[string]entity.SearchTasks, error) {
+	result := make(map[string]entity.SearchTasks)
+	ids := uniqueTaskIDs(rows)
+	if len(ids) == 0 {
+		return result, nil
+	}
+	var tasks []entity.SearchTasks
+	if err := dao.SearchTasks.Ctx(ctx).WhereIn(dao.SearchTasks.Columns().Id, ids).Scan(&tasks); err != nil {
+		return nil, err
+	}
+	for _, task := range tasks {
+		result[task.Id] = task
+	}
+	return result, nil
+}
+
+func loadSources(ctx context.Context, notes map[string]entity.SourceNotes) (map[string]entity.SourceChannels, map[string]entity.DataSources, error) {
+	channels := make(map[string]entity.SourceChannels)
+	dataSources := make(map[string]entity.DataSources)
+	if len(notes) == 0 {
+		return channels, dataSources, nil
+	}
+	sourceIDs := make([]string, 0, len(notes))
+	channelIDs := make([]int64, 0, len(notes))
+	seenSources := make(map[string]struct{})
+	seenChannels := make(map[int64]struct{})
+	for _, note := range notes {
+		if _, ok := seenSources[note.DataSourceId]; !ok {
+			seenSources[note.DataSourceId] = struct{}{}
+			sourceIDs = append(sourceIDs, note.DataSourceId)
+		}
+		if _, ok := seenChannels[note.ChannelId]; !ok {
+			seenChannels[note.ChannelId] = struct{}{}
+			channelIDs = append(channelIDs, note.ChannelId)
+		}
+	}
+	var channelRows []entity.SourceChannels
+	if err := dao.SourceChannels.Ctx(ctx).WhereIn(dao.SourceChannels.Columns().DataSourceId, sourceIDs).
+		WhereIn(dao.SourceChannels.Columns().ChannelId, channelIDs).Scan(&channelRows); err != nil {
+		return nil, nil, err
+	}
+	for _, channel := range channelRows {
+		channels[sourceChannelKey(channel.DataSourceId, channel.ChannelId)] = channel
+	}
+	var sourceRows []entity.DataSources
+	if err := dao.DataSources.Ctx(ctx).WhereIn(dao.DataSources.Columns().Id, sourceIDs).Scan(&sourceRows); err != nil {
+		return nil, nil, err
+	}
+	for _, source := range sourceRows {
+		dataSources[source.Id] = source
+	}
+	return channels, dataSources, nil
+}
+
+func sourceChannelKey(dataSourceID string, channelID int64) string {
+	return dataSourceID + ":" + strconv.FormatInt(channelID, 10)
 }
 
 func fillImageProgress(ctx context.Context, item *IndependentItem) error {

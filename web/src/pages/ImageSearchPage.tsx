@@ -1,51 +1,592 @@
-import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { Badge, Button, Card, Dialog, Flex, Heading, Progress, Select, Switch, Table, Tabs, Text, TextArea, TextField } from '@radix-ui/themes'
-import { PlusIcon, ReloadIcon } from '@radix-ui/react-icons'
-import { get, post, put } from '../api/client'
-import { useFetch } from '../lib/useFetch'
-import { notify } from '../lib/toast'
-import { fmtTime } from '../lib/format'
-import { statusColor, statusLabel } from '../features/image-search/status'
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { Badge, Button, Card, Dialog, Flex, Heading, Progress, Select, Switch, Table, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
+import { MagnifyingGlassIcon, PlusIcon, ReloadIcon } from "@radix-ui/react-icons";
+import { get, post, put } from "../api/client";
+import { useFetch } from "../lib/useFetch";
+import { notify } from "../lib/toast";
+import { fmtTime } from "../lib/format";
+import { statusColor, statusLabel } from "../features/image-search/status";
 
-interface Task { id:string; title:string; sourceType:string; status:string; totalCount:number; completedCount:number; progressPercent:number; filteredCount:number; matchedCount:number; failedCount:number; errorMessage:string; createdAt:string }
-interface TaskPage { items:Task[]; total:number; totalPages:number }
-interface IndependentItem { id:string; searchTaskId:string; sourceNoteId:string; externalId:string; plainText:string; status:string; preprocessStatus:string; filterStatus:string; filterReason:string; imageSearchRequestId:string; imageTotal:number; imageCompleted:number; imageRunning:number; imageQueued:number; imageFailed:number; progressPercent:number; matched:number; bestScore?:number; errorMessage:string; durationMs:number; createdAt:string; updatedAt:string }
-interface IndependentItemPage { items:IndependentItem[]; total:number; totalPages:number }
-interface Config { id:string; name:string; ocrEnabled:number; ocrKeywords:string[]; ocrMatchMode:string; scoreThreshold:number; maxPhashDistance:number; maxDhashDistance:number; maxAhashDistance:number; maxCandidates:number; pipelineName:string; enabled:number }
-interface Form { id?:string; name:string; ocrEnabled:boolean; keywords:string; ocrMatchMode:string; scoreThreshold:number; maxPhashDistance:number; maxDhashDistance:number; maxAhashDistance:number; maxCandidates:number; pipelineName:string; enabled:boolean }
-const empty:Form={name:'默认搜索配置',ocrEnabled:false,keywords:'',ocrMatchMode:'contains_any',scoreThreshold:.82,maxPhashDistance:12,maxDhashDistance:16,maxAhashDistance:16,maxCandidates:20,pipelineName:'hash-v1',enabled:true}
+interface Task {
+  id: string;
+  title: string;
+  sourceType: string;
+  status: string;
+  totalCount: number;
+  completedCount: number;
+  progressPercent: number;
+  filteredCount: number;
+  matchedCount: number;
+  failedCount: number;
+  errorMessage: string;
+  createdAt: string;
+}
+interface TaskPage {
+  items: Task[];
+  total: number;
+  totalPages: number;
+}
+interface IndependentItem {
+  id: string;
+  searchTaskId: string;
+  sourceNoteId: string;
+  externalId: string;
+  plainText: string;
+  status: string;
+  preprocessStatus: string;
+  filterStatus: string;
+  filterReason: string;
+  imageSearchRequestId: string;
+  imageTotal: number;
+  imageCompleted: number;
+  imageRunning: number;
+  imageQueued: number;
+  imageFailed: number;
+  progressPercent: number;
+  matched: number;
+  bestScore?: number;
+  errorMessage: string;
+  durationMs: number;
+  taskTitle: string;
+  sourceType: string;
+  channelId: number;
+  channelTitle: string;
+  dataSourceId: string;
+  dataSourceName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+interface IndependentItemPage {
+  items: IndependentItem[];
+  total: number;
+  totalPages: number;
+}
+interface Config {
+  id: string;
+  name: string;
+  ocrEnabled: number;
+  ocrKeywords: string[];
+  ocrMatchMode: string;
+  scoreThreshold: number;
+  maxPhashDistance: number;
+  maxDhashDistance: number;
+  maxAhashDistance: number;
+  maxCandidates: number;
+  pipelineName: string;
+  enabled: number;
+}
+interface Form {
+  id?: string;
+  name: string;
+  ocrEnabled: boolean;
+  keywords: string;
+  ocrMatchMode: string;
+  scoreThreshold: number;
+  maxPhashDistance: number;
+  maxDhashDistance: number;
+  maxAhashDistance: number;
+  maxCandidates: number;
+  pipelineName: string;
+  enabled: boolean;
+}
+const empty: Form = {
+  name: "默认搜索配置",
+  ocrEnabled: false,
+  keywords: "",
+  ocrMatchMode: "contains_any",
+  scoreThreshold: 0.82,
+  maxPhashDistance: 12,
+  maxDhashDistance: 16,
+  maxAhashDistance: 16,
+  maxCandidates: 20,
+  pipelineName: "hash-v1",
+  enabled: true,
+};
 
-export default function ImageSearchPage(){
- const[page,setPage]=useState(1),[itemPage,setItemPage]=useState(1),[open,setOpen]=useState(false),[form,setForm]=useState<Form>(empty),[textItem,setTextItem]=useState<IndependentItem|null>(null)
- const tasks=useFetch(()=>get<TaskPage>(`/api/v1/search-tasks?page=${page}&pageSize=10`),[page])
- const independentItems=useFetch(()=>get<IndependentItemPage>(`/api/v1/search-task-items?page=${itemPage}&pageSize=20`),[itemPage])
- const configs=useFetch(()=>get<{items:Config[]}>('/api/v1/search-configs'))
- useEffect(()=>{const timer=window.setInterval(()=>{tasks.reload();independentItems.reload()},5000);return()=>window.clearInterval(timer)},[page,itemPage])
- async function save(){const body={...form,ocrKeywords:form.keywords.split('\n').map(v=>v.trim()).filter(Boolean)};try{form.id?await put(`/api/v1/search-configs/${form.id}`,body):await post('/api/v1/search-configs',body);notify.success('搜索配置已保存');setOpen(false);configs.reload()}catch(e){notify.error(e,'保存搜索配置失败')}}
- return <Flex direction="column" gap="4"><Flex justify="between"><div><Heading size="5">图片搜索</Heading><Text size="2" color="gray">按设备并发执行，每台设备同一时间处理一张图片。</Text></div><Button variant="soft" onClick={()=>{tasks.reload();independentItems.reload();configs.reload()}}><ReloadIcon/>刷新</Button></Flex><Tabs.Root defaultValue="items"><Tabs.List><Tabs.Trigger value="items">独立资料搜索</Tabs.Trigger><Tabs.Trigger value="tasks">搜索任务</Tabs.Trigger><Tabs.Trigger value="configs">搜索配置</Tabs.Trigger></Tabs.List><Tabs.Content value="items"><IndependentItemsTable data={independentItems.data} page={itemPage} setPage={setItemPage} showText={setTextItem}/></Tabs.Content><Tabs.Content value="tasks"><Card><Table.Root><Table.Header><Table.Row><Table.ColumnHeaderCell>任务 / ID</Table.ColumnHeaderCell><Table.ColumnHeaderCell>来源</Table.ColumnHeaderCell><Table.ColumnHeaderCell>状态与进度</Table.ColumnHeaderCell><Table.ColumnHeaderCell>匹配</Table.ColumnHeaderCell><Table.ColumnHeaderCell>过滤 / 失败</Table.ColumnHeaderCell><Table.ColumnHeaderCell>创建时间</Table.ColumnHeaderCell><Table.ColumnHeaderCell/></Table.Row></Table.Header><Table.Body>{(tasks.data?.items??[]).map(t=><Table.Row key={t.id}><Table.RowHeaderCell><Text as="div">{t.title||'未命名任务'}</Text><Text as="div" size="1" color="gray">{t.id}</Text></Table.RowHeaderCell><Table.Cell>{t.sourceType}</Table.Cell><Table.Cell><Flex direction="column" gap="1" style={{minWidth:150}}><Flex justify="between"><Badge color={statusColor(t.status)}>{statusLabel(t.status)}</Badge><Text size="1" color="gray">{t.completedCount}/{t.totalCount}</Text></Flex><Progress value={t.progressPercent}/>{t.errorMessage&&<Text size="1" color="red">{t.errorMessage}</Text>}</Flex></Table.Cell><Table.Cell>{t.matchedCount}</Table.Cell><Table.Cell>{t.filteredCount} / {t.failedCount}</Table.Cell><Table.Cell>{fmtTime(t.createdAt)}</Table.Cell><Table.Cell><Button asChild size="1" variant="soft"><Link to={`/image-search/${t.id}`}>查看资料</Link></Button></Table.Cell></Table.Row>)}</Table.Body></Table.Root><Pager page={page} total={tasks.data?.totalPages??0} setPage={setPage}/></Card></Tabs.Content><Tabs.Content value="configs"><Card><Flex justify="between" mb="3"><Heading size="3">搜索配置</Heading><Button onClick={()=>{setForm(empty);setOpen(true)}}><PlusIcon/>新增配置</Button></Flex><Table.Root><Table.Header><Table.Row><Table.ColumnHeaderCell>名称</Table.ColumnHeaderCell><Table.ColumnHeaderCell>OCR</Table.ColumnHeaderCell><Table.ColumnHeaderCell>屏蔽词</Table.ColumnHeaderCell><Table.ColumnHeaderCell>分数</Table.ColumnHeaderCell><Table.ColumnHeaderCell>pHash</Table.ColumnHeaderCell><Table.ColumnHeaderCell/></Table.Row></Table.Header><Table.Body>{(configs.data?.items??[]).map(c=><Table.Row key={c.id}><Table.RowHeaderCell>{c.name}</Table.RowHeaderCell><Table.Cell>{c.ocrEnabled?'启用':'关闭'}</Table.Cell><Table.Cell>{c.ocrKeywords.length}</Table.Cell><Table.Cell>{c.scoreThreshold}</Table.Cell><Table.Cell>{c.maxPhashDistance}</Table.Cell><Table.Cell><Button size="1" variant="soft" onClick={()=>{setForm({id:c.id,name:c.name,ocrEnabled:!!c.ocrEnabled,keywords:c.ocrKeywords.join('\n'),ocrMatchMode:c.ocrMatchMode,scoreThreshold:c.scoreThreshold,maxPhashDistance:c.maxPhashDistance,maxDhashDistance:c.maxDhashDistance,maxAhashDistance:c.maxAhashDistance,maxCandidates:c.maxCandidates,pipelineName:c.pipelineName,enabled:!!c.enabled});setOpen(true)}}>编辑</Button></Table.Cell></Table.Row>)}</Table.Body></Table.Root></Card></Tabs.Content></Tabs.Root><TextDialog item={textItem} close={()=>setTextItem(null)}/><ConfigDialog open={open} form={form} setOpen={setOpen} setForm={setForm} save={save}/></Flex>
+export default function ImageSearchPage() {
+  const [page, setPage] = useState(1),
+    [itemPage, setItemPage] = useState(1),
+    [open, setOpen] = useState(false),
+    [form, setForm] = useState<Form>(empty),
+    [textItem, setTextItem] = useState<IndependentItem | null>(null),
+    [groupItem, setGroupItem] = useState<IndependentItem | null>(null),
+    [itemQuery, setItemQuery] = useState(""),
+    [itemSearch, setItemSearch] = useState("");
+  const tasks = useFetch(() => get<TaskPage>(`/api/v1/search-tasks?page=${page}&pageSize=10`), [page]);
+  const independentItems = useFetch(() => get<IndependentItemPage>(`/api/v1/search-task-items?page=${itemPage}&pageSize=20&q=${encodeURIComponent(itemSearch)}`), [itemPage, itemSearch]);
+  const configs = useFetch(() => get<{ items: Config[] }>("/api/v1/search-configs"));
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      tasks.reload();
+      independentItems.reload();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [page, itemPage, itemSearch]);
+  function searchItems() {
+    setItemPage(1);
+    setItemSearch(itemQuery.trim());
+  }
+  async function save() {
+    const body = {
+      ...form,
+      ocrKeywords: form.keywords
+        .split("\n")
+        .map((v) => v.trim())
+        .filter(Boolean),
+    };
+    try {
+      form.id ? await put(`/api/v1/search-configs/${form.id}`, body) : await post("/api/v1/search-configs", body);
+      notify.success("搜索配置已保存");
+      setOpen(false);
+      configs.reload();
+    } catch (e) {
+      notify.error(e, "保存搜索配置失败");
+    }
+  }
+  return (
+    <Flex direction="column" gap="4">
+      <Flex justify="between">
+        <div>
+          <Heading size="5">图片搜索</Heading>
+          <Text size="2" color="gray">
+            按设备并发执行，每台设备同一时间处理一张图片。
+          </Text>
+        </div>
+        <Button
+          variant="soft"
+          onClick={() => {
+            tasks.reload();
+            independentItems.reload();
+            configs.reload();
+          }}
+        >
+          <ReloadIcon />
+          刷新
+        </Button>
+      </Flex>
+      <Tabs.Root defaultValue="items">
+        <Tabs.List>
+          <Tabs.Trigger value="items">独立资料搜索</Tabs.Trigger>
+          <Tabs.Trigger value="tasks">搜索任务</Tabs.Trigger>
+          <Tabs.Trigger value="configs">搜索配置</Tabs.Trigger>
+        </Tabs.List>
+        <Tabs.Content value="items">
+          <IndependentItemsTable data={independentItems.data} page={itemPage} setPage={setItemPage} showText={setTextItem} showGroup={setGroupItem} query={itemQuery} setQuery={setItemQuery} search={searchItems} />
+        </Tabs.Content>
+        <Tabs.Content value="tasks">
+          <Card>
+            <Table.Root>
+              <Table.Header>
+                <Table.Row>
+                  <Table.ColumnHeaderCell>任务 / ID</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>来源</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>状态与进度</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>匹配</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>过滤 / 失败</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>创建时间</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell />
+                </Table.Row>
+              </Table.Header>
+              <Table.Body>
+                {(tasks.data?.items ?? []).map((t) => (
+                  <Table.Row key={t.id}>
+                    <Table.RowHeaderCell>
+                      <Text as="div">{t.title || "未命名任务"}</Text>
+                      <Text as="div" size="1" color="gray">
+                        {t.id}
+                      </Text>
+                    </Table.RowHeaderCell>
+                    <Table.Cell>{t.sourceType}</Table.Cell>
+                    <Table.Cell>
+                      <Flex direction="column" gap="1" style={{ minWidth: 150 }}>
+                        <Flex justify="between">
+                          <Badge color={statusColor(t.status)}>{statusLabel(t.status)}</Badge>
+                          <Text size="1" color="gray">
+                            {t.completedCount}/{t.totalCount}
+                          </Text>
+                        </Flex>
+                        <Progress value={t.progressPercent} />
+                        {t.errorMessage && (
+                          <Text size="1" color="red">
+                            {t.errorMessage}
+                          </Text>
+                        )}
+                      </Flex>
+                    </Table.Cell>
+                    <Table.Cell>{t.matchedCount}</Table.Cell>
+                    <Table.Cell>
+                      {t.filteredCount} / {t.failedCount}
+                    </Table.Cell>
+                    <Table.Cell>{fmtTime(t.createdAt)}</Table.Cell>
+                    <Table.Cell>
+                      <Button asChild size="1" variant="soft">
+                        <Link to={`/image-search/${t.id}`}>查看资料</Link>
+                      </Button>
+                    </Table.Cell>
+                  </Table.Row>
+                ))}
+              </Table.Body>
+            </Table.Root>
+            <Pager page={page} total={tasks.data?.totalPages ?? 0} setPage={setPage} />
+          </Card>
+        </Tabs.Content>
+        <Tabs.Content value="configs">
+          <Card>
+            <Flex justify="between" mb="3">
+              <Heading size="3">搜索配置</Heading>
+              <Button
+                onClick={() => {
+                  setForm(empty);
+                  setOpen(true);
+                }}
+              >
+                <PlusIcon />
+                新增配置
+              </Button>
+            </Flex>
+            <Table.Root>
+              <Table.Header>
+                <Table.Row>
+                  <Table.ColumnHeaderCell>名称</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>OCR</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>屏蔽词</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>分数</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell>pHash</Table.ColumnHeaderCell>
+                  <Table.ColumnHeaderCell />
+                </Table.Row>
+              </Table.Header>
+              <Table.Body>
+                {(configs.data?.items ?? []).map((c) => (
+                  <Table.Row key={c.id}>
+                    <Table.RowHeaderCell>{c.name}</Table.RowHeaderCell>
+                    <Table.Cell>{c.ocrEnabled ? "启用" : "关闭"}</Table.Cell>
+                    <Table.Cell>{c.ocrKeywords.length}</Table.Cell>
+                    <Table.Cell>{c.scoreThreshold}</Table.Cell>
+                    <Table.Cell>{c.maxPhashDistance}</Table.Cell>
+                    <Table.Cell>
+                      <Button
+                        size="1"
+                        variant="soft"
+                        onClick={() => {
+                          setForm({
+                            id: c.id,
+                            name: c.name,
+                            ocrEnabled: !!c.ocrEnabled,
+                            keywords: c.ocrKeywords.join("\n"),
+                            ocrMatchMode: c.ocrMatchMode,
+                            scoreThreshold: c.scoreThreshold,
+                            maxPhashDistance: c.maxPhashDistance,
+                            maxDhashDistance: c.maxDhashDistance,
+                            maxAhashDistance: c.maxAhashDistance,
+                            maxCandidates: c.maxCandidates,
+                            pipelineName: c.pipelineName,
+                            enabled: !!c.enabled,
+                          });
+                          setOpen(true);
+                        }}
+                      >
+                        编辑
+                      </Button>
+                    </Table.Cell>
+                  </Table.Row>
+                ))}
+              </Table.Body>
+            </Table.Root>
+          </Card>
+        </Tabs.Content>
+      </Tabs.Root>
+      <TextDialog item={textItem} close={() => setTextItem(null)} />
+      <TaskGroupDialog item={groupItem} close={() => setGroupItem(null)} />
+      <ConfigDialog open={open} form={form} setOpen={setOpen} setForm={setForm} save={save} />
+    </Flex>
+  );
 }
 
-function IndependentItemsTable({data,page,setPage,showText}:{data:IndependentItemPage|null;page:number;setPage:(v:number)=>void;showText:(item:IndependentItem)=>void}){
- return <Card><Flex justify="between" align="center" mb="3"><div><Heading size="3">独立资料搜索</Heading><Text size="2" color="gray">每条资料独立追踪到图片级处理进度</Text></div><Badge variant="soft">共 {data?.total??0} 条</Badge></Flex><div style={{overflowX:'auto'}}><Table.Root><Table.Header><Table.Row><Table.ColumnHeaderCell>资料编号 / 正文</Table.ColumnHeaderCell><Table.ColumnHeaderCell>预处理</Table.ColumnHeaderCell><Table.ColumnHeaderCell>过滤</Table.ColumnHeaderCell><Table.ColumnHeaderCell>搜索状态 / 图片进度</Table.ColumnHeaderCell><Table.ColumnHeaderCell>错误 / 耗时</Table.ColumnHeaderCell><Table.ColumnHeaderCell>结果</Table.ColumnHeaderCell></Table.Row></Table.Header><Table.Body>{(data?.items??[]).map(item=><Table.Row key={item.id}><Table.RowHeaderCell style={{minWidth:190}}><Text as="div" weight="medium">{item.externalId||item.sourceNoteId}</Text><Button size="1" variant="ghost" color="gray" onClick={()=>showText(item)}>{textPreview(item.plainText)}</Button></Table.RowHeaderCell><Table.Cell><Badge color={statusColor(item.preprocessStatus)}>{statusLabel(item.preprocessStatus)}</Badge></Table.Cell><Table.Cell><Badge color={item.filterStatus==='blocked'?'amber':statusColor(item.filterStatus)}>{statusLabel(item.filterStatus)}</Badge>{item.filterReason&&<Text as="div" size="1" color="gray" mt="1">{item.filterReason}</Text>}</Table.Cell><Table.Cell style={{minWidth:210}}><Flex direction="column" gap="1"><Flex justify="between"><Badge color={statusColor(item.status)}>{statusLabel(item.status)}</Badge><Text size="1" color="gray">{item.imageCompleted+item.imageFailed}/{item.imageTotal} 张</Text></Flex><Progress value={item.progressPercent}/><Text size="1" color="gray">排队 {item.imageQueued} · 执行 {item.imageRunning} · 失败 {item.imageFailed}</Text></Flex></Table.Cell><Table.Cell style={{minWidth:170}}>{item.errorMessage?<Text as="div" size="1" color="red">{item.errorMessage}</Text>:<Text as="div" size="1" color="gray">无错误</Text>}<Text as="div" size="1" color="gray" mt="1">耗时 {formatDuration(item.durationMs)}</Text></Table.Cell><Table.Cell>{item.imageSearchRequestId?<Button asChild size="1" variant="soft"><Link to={`/image-search/results/${item.imageSearchRequestId}`}>查看结果</Link></Button>:'—'}</Table.Cell></Table.Row>)}</Table.Body></Table.Root></div><Pager page={page} total={data?.totalPages??0} setPage={setPage}/></Card>
+function IndependentItemsTable({ data, page, setPage, showText, showGroup, query, setQuery, search }: { data: IndependentItemPage | null; page: number; setPage: (v: number) => void; showText: (item: IndependentItem) => void; showGroup: (item: IndependentItem) => void; query: string; setQuery: (value: string) => void; search: () => void }) {
+  return (
+    <Card>
+      <Flex justify="between" align="end" gap="3" mb="3" wrap="wrap">
+        <div>
+          <Heading size="3">独立资料搜索</Heading>
+          <Text size="2" color="gray">
+            每条资料独立追踪到图片级处理进度
+          </Text>
+        </div>
+        <Flex gap="2" align="center">
+          <TextField.Root
+            placeholder="搜索 MN 编号或资料编号"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") search();
+            }}
+            style={{ width: 260 }}
+          >
+            <TextField.Slot>
+              <MagnifyingGlassIcon />
+            </TextField.Slot>
+          </TextField.Root>
+          <Button variant="soft" onClick={search}>
+            搜索
+          </Button>
+          <Badge variant="soft">共 {data?.total ?? 0} 条</Badge>
+        </Flex>
+      </Flex>
+      <div style={{ overflowX: "auto" }}>
+        <Table.Root>
+          <Table.Header>
+            <Table.Row>
+              <Table.ColumnHeaderCell>资料编号 / 正文</Table.ColumnHeaderCell>
+              <Table.ColumnHeaderCell>预处理</Table.ColumnHeaderCell>
+              <Table.ColumnHeaderCell>过滤</Table.ColumnHeaderCell>
+              <Table.ColumnHeaderCell>匹配</Table.ColumnHeaderCell>
+              <Table.ColumnHeaderCell>搜索状态 / 图片进度</Table.ColumnHeaderCell>
+              <Table.ColumnHeaderCell>错误 / 耗时</Table.ColumnHeaderCell>
+              <Table.ColumnHeaderCell>创建时间</Table.ColumnHeaderCell>
+              <Table.ColumnHeaderCell>任务组</Table.ColumnHeaderCell>
+              <Table.ColumnHeaderCell>结果</Table.ColumnHeaderCell>
+            </Table.Row>
+          </Table.Header>
+          <Table.Body>
+            {(data?.items ?? []).map((item) => (
+              <Table.Row key={item.id}>
+                <Table.RowHeaderCell style={{ minWidth: 190 }}>
+                  <Text as="div" weight="medium">
+                    {item.externalId || item.sourceNoteId}
+                  </Text>
+                  <Button size="1" variant="ghost" color="gray" onClick={() => showText(item)}>
+                    {textPreview(item.plainText)}
+                  </Button>
+                </Table.RowHeaderCell>
+                <Table.Cell>
+                  <Badge color={statusColor(item.preprocessStatus)}>{statusLabel(item.preprocessStatus)}</Badge>
+                </Table.Cell>
+                <Table.Cell>
+                  <Badge color={item.filterStatus === "blocked" ? "amber" : statusColor(item.filterStatus)}>{statusLabel(item.filterStatus)}</Badge>
+                  {item.filterReason && (
+                    <Text as="div" size="1" color="gray" mt="1">
+                      {item.filterReason}
+                    </Text>
+                  )}
+                </Table.Cell>
+                <Table.Cell>{item.matched ? <Badge color="green">{(item.bestScore! * 100).toFixed(1)}%</Badge> : <Text color="gray">—</Text>}</Table.Cell>
+                <Table.Cell style={{ minWidth: 210 }}>
+                  <Flex direction="column" gap="1">
+                    <Flex justify="between">
+                      <Badge color={statusColor(item.status)}>{statusLabel(item.status)}</Badge>
+                      <Text size="1" color="gray">
+                        {item.imageCompleted + item.imageFailed}/{item.imageTotal} 张
+                      </Text>
+                    </Flex>
+                    <Progress value={item.progressPercent} />
+                    <Text size="1" color="gray">
+                      排队 {item.imageQueued} · 执行 {item.imageRunning} · 失败 {item.imageFailed}
+                    </Text>
+                  </Flex>
+                </Table.Cell>
+                <Table.Cell style={{ minWidth: 170 }}>
+                  {item.errorMessage ? (
+                    <Text as="div" size="1" color="red">
+                      {item.errorMessage}
+                    </Text>
+                  ) : (
+                    <Text as="div" size="1" color="gray">
+                      无错误
+                    </Text>
+                  )}
+                  <Text as="div" size="1" color="gray" mt="1">
+                    耗时 {formatDuration(item.durationMs)}
+                  </Text>
+                </Table.Cell>
+                <Table.Cell style={{ minWidth: 140 }}>{fmtTime(item.createdAt)}</Table.Cell>
+                <Table.Cell style={{ minWidth: 150 }}>
+                  <Button size="1" variant="ghost" onClick={() => showGroup(item)}>
+                    {item.taskTitle || item.searchTaskId}
+                  </Button>
+                </Table.Cell>
+                <Table.Cell>
+                  {item.imageSearchRequestId ? (
+                    <Button asChild size="1" variant="soft">
+                      <Link to={`/image-search/results/${item.imageSearchRequestId}`}>查看结果</Link>
+                    </Button>
+                  ) : (
+                    "—"
+                  )}
+                </Table.Cell>
+              </Table.Row>
+            ))}
+          </Table.Body>
+        </Table.Root>
+      </div>
+      <Pager page={page} total={data?.totalPages ?? 0} setPage={setPage} />
+    </Card>
+  );
 }
 
-function TextDialog({item,close}:{item:IndependentItem|null;close:()=>void}){return <Dialog.Root open={!!item} onOpenChange={open=>{if(!open)close()}}><Dialog.Content maxWidth="680px"><Dialog.Title>资料正文</Dialog.Title><Dialog.Description size="2" color="gray">资料编号：{item?.externalId||item?.sourceNoteId}</Dialog.Description><Text as="div" mt="4" style={{whiteSpace:'pre-wrap',maxHeight:'60vh',overflow:'auto'}}>{item?.plainText||'暂无正文'}</Text><Flex justify="end" mt="4"><Dialog.Close><Button variant="soft">关闭</Button></Dialog.Close></Flex></Dialog.Content></Dialog.Root>}
-function textPreview(value:string){const text=value.trim();return text?`${text.slice(0,10)}${text.length>10?'…':''}`:'查看正文'}
-function formatDuration(ms:number){if(ms<1000)return `${ms} ms`;const seconds=Math.floor(ms/1000);if(seconds<60)return `${seconds} 秒`;const minutes=Math.floor(seconds/60);return `${minutes} 分 ${seconds%60} 秒`}
-function Pager({page,total,setPage}:{page:number;total:number;setPage:(v:number)=>void}){return total>1?<Flex justify="end" gap="3" mt="3"><Button size="1" disabled={page<=1} onClick={()=>setPage(page-1)}>上一页</Button><Text>第 {page} / {total} 页</Text><Button size="1" disabled={page>=total} onClick={()=>setPage(page+1)}>下一页</Button></Flex>:null}
-function ConfigDialog({open,form,setOpen,setForm,save}:{open:boolean;form:Form;setOpen:(v:boolean)=>void;setForm:(v:Form)=>void;save:()=>void}){
- return <Dialog.Root open={open} onOpenChange={setOpen}><Dialog.Content maxWidth="680px"><Dialog.Title>搜索配置</Dialog.Title><Flex direction="column" gap="3" mt="4">
-  <label>名称<TextField.Root value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>
-  <Flex gap="2"><Switch checked={form.enabled} onCheckedChange={v=>setForm({...form,enabled:v})}/><Text>启用配置</Text></Flex>
-  <Flex gap="2"><Switch checked={form.ocrEnabled} onCheckedChange={v=>setForm({...form,ocrEnabled:v})}/><Text>启用 OCR 关键字屏蔽</Text></Flex>
-  {form.ocrEnabled&&<><Select.Root value={form.ocrMatchMode} onValueChange={v=>setForm({...form,ocrMatchMode:v})}><Select.Trigger/><Select.Content><Select.Item value="contains_any">命中任一关键字</Select.Item><Select.Item value="contains_all">命中全部关键字</Select.Item></Select.Content></Select.Root><TextArea placeholder="每行一个屏蔽关键字" value={form.keywords} onChange={e=>setForm({...form,keywords:e.target.value})} rows={6}/></>}
-  <Flex gap="3" wrap="wrap">
-   <label>最低分数<TextField.Root type="number" min="0.01" max="1" step="0.01" value={String(form.scoreThreshold)} onChange={e=>setForm({...form,scoreThreshold:Number(e.target.value)})}/></label>
-   <label>最大 pHash<TextField.Root type="number" min="1" max="64" value={String(form.maxPhashDistance)} onChange={e=>setForm({...form,maxPhashDistance:Number(e.target.value)})}/></label>
-   <label>最大 dHash<TextField.Root type="number" min="1" max="64" value={String(form.maxDhashDistance)} onChange={e=>setForm({...form,maxDhashDistance:Number(e.target.value)})}/></label>
-   <label>最大 aHash<TextField.Root type="number" min="1" max="64" value={String(form.maxAhashDistance)} onChange={e=>setForm({...form,maxAhashDistance:Number(e.target.value)})}/></label>
-   <label>候选数<TextField.Root type="number" min="1" max="100" value={String(form.maxCandidates)} onChange={e=>setForm({...form,maxCandidates:Number(e.target.value)})}/></label>
-  </Flex>
- </Flex><Flex justify="end" gap="2" mt="5"><Dialog.Close><Button variant="soft">取消</Button></Dialog.Close><Button onClick={save}>保存</Button></Flex></Dialog.Content></Dialog.Root>
+function TextDialog({ item, close }: { item: IndependentItem | null; close: () => void }) {
+  return (
+    <Dialog.Root
+      open={!!item}
+      onOpenChange={(open) => {
+        if (!open) close();
+      }}
+    >
+      <Dialog.Content maxWidth="680px">
+        <Dialog.Title>资料正文</Dialog.Title>
+        <Dialog.Description size="2" color="gray">
+          资料编号：{item?.externalId || item?.sourceNoteId}
+        </Dialog.Description>
+        <Text
+          as="div"
+          mt="4"
+          style={{
+            whiteSpace: "pre-wrap",
+            maxHeight: "60vh",
+            overflow: "auto",
+          }}
+        >
+          {item?.plainText || "暂无正文"}
+        </Text>
+        <Flex justify="end" mt="4">
+          <Dialog.Close>
+            <Button variant="soft">关闭</Button>
+          </Dialog.Close>
+        </Flex>
+      </Dialog.Content>
+    </Dialog.Root>
+  );
+}
+
+function TaskGroupDialog({ item, close }: { item: IndependentItem | null; close: () => void }) {
+  return (
+    <Dialog.Root
+      open={!!item}
+      onOpenChange={(open) => {
+        if (!open) close();
+      }}
+    >
+      <Dialog.Content maxWidth="560px">
+        <Dialog.Title>任务组与来源</Dialog.Title>
+        <Dialog.Description size="2" color="gray">
+          {item?.taskTitle || "未命名任务"}
+        </Dialog.Description>
+        <Table.Root mt="4">
+          <Table.Body>
+            <DetailRow label="搜索任务 ID" value={item?.searchTaskId} />
+            <DetailRow label="来源类型" value={item?.sourceType} />
+            <DetailRow label="数据源" value={item?.dataSourceName || item?.dataSourceId} />
+            <DetailRow label="数据源 ID" value={item?.dataSourceId} />
+            <DetailRow label="频道" value={item?.channelTitle || (item?.channelId ? String(item.channelId) : "")} />
+            <DetailRow label="频道 ID" value={item?.channelId ? String(item.channelId) : ""} />
+            <DetailRow label="资料 ID" value={item?.sourceNoteId} />
+          </Table.Body>
+        </Table.Root>
+        <Flex justify="end" mt="4">
+          <Dialog.Close>
+            <Button variant="soft">关闭</Button>
+          </Dialog.Close>
+        </Flex>
+      </Dialog.Content>
+    </Dialog.Root>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value?: string }) {
+  return (
+    <Table.Row>
+      <Table.RowHeaderCell>{label}</Table.RowHeaderCell>
+      <Table.Cell style={{ overflowWrap: "anywhere" }}>{value || "—"}</Table.Cell>
+    </Table.Row>
+  );
+}
+
+function textPreview(value: string) {
+  const text = value.trim();
+  return text ? `${text.slice(0, 10)}${text.length > 10 ? "…" : ""}` : "查看正文";
+}
+function formatDuration(ms: number) {
+  if (ms < 1000) return `${ms} ms`;
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} 分 ${seconds % 60} 秒`;
+}
+function Pager({ page, total, setPage }: { page: number; total: number; setPage: (v: number) => void }) {
+  return total > 1 ? (
+    <Flex justify="end" gap="3" mt="3">
+      <Button size="1" disabled={page <= 1} onClick={() => setPage(page - 1)}>
+        上一页
+      </Button>
+      <Text>
+        第 {page} / {total} 页
+      </Text>
+      <Button size="1" disabled={page >= total} onClick={() => setPage(page + 1)}>
+        下一页
+      </Button>
+    </Flex>
+  ) : null;
+}
+function ConfigDialog({ open, form, setOpen, setForm, save }: { open: boolean; form: Form; setOpen: (v: boolean) => void; setForm: (v: Form) => void; save: () => void }) {
+  return (
+    <Dialog.Root open={open} onOpenChange={setOpen}>
+      <Dialog.Content maxWidth="680px">
+        <Dialog.Title>搜索配置</Dialog.Title>
+        <Flex direction="column" gap="3" mt="4">
+          <label>
+            名称
+            <TextField.Root value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </label>
+          <Flex gap="2">
+            <Switch checked={form.enabled} onCheckedChange={(v) => setForm({ ...form, enabled: v })} />
+            <Text>启用配置</Text>
+          </Flex>
+          <Flex gap="2">
+            <Switch checked={form.ocrEnabled} onCheckedChange={(v) => setForm({ ...form, ocrEnabled: v })} />
+            <Text>启用 OCR 关键字屏蔽</Text>
+          </Flex>
+          {form.ocrEnabled && (
+            <>
+              <Select.Root value={form.ocrMatchMode} onValueChange={(v) => setForm({ ...form, ocrMatchMode: v })}>
+                <Select.Trigger />
+                <Select.Content>
+                  <Select.Item value="contains_any">命中任一关键字</Select.Item>
+                  <Select.Item value="contains_all">命中全部关键字</Select.Item>
+                </Select.Content>
+              </Select.Root>
+              <TextArea placeholder="每行一个屏蔽关键字" value={form.keywords} onChange={(e) => setForm({ ...form, keywords: e.target.value })} rows={6} />
+            </>
+          )}
+          <Flex gap="3" wrap="wrap">
+            <label>
+              最低分数
+              <TextField.Root type="number" min="0.01" max="1" step="0.01" value={String(form.scoreThreshold)} onChange={(e) => setForm({ ...form, scoreThreshold: Number(e.target.value) })} />
+            </label>
+            <label>
+              最大 pHash
+              <TextField.Root type="number" min="1" max="64" value={String(form.maxPhashDistance)} onChange={(e) => setForm({ ...form, maxPhashDistance: Number(e.target.value) })} />
+            </label>
+            <label>
+              最大 dHash
+              <TextField.Root type="number" min="1" max="64" value={String(form.maxDhashDistance)} onChange={(e) => setForm({ ...form, maxDhashDistance: Number(e.target.value) })} />
+            </label>
+            <label>
+              最大 aHash
+              <TextField.Root type="number" min="1" max="64" value={String(form.maxAhashDistance)} onChange={(e) => setForm({ ...form, maxAhashDistance: Number(e.target.value) })} />
+            </label>
+            <label>
+              候选数
+              <TextField.Root type="number" min="1" max="100" value={String(form.maxCandidates)} onChange={(e) => setForm({ ...form, maxCandidates: Number(e.target.value) })} />
+            </label>
+          </Flex>
+        </Flex>
+        <Flex justify="end" gap="2" mt="5">
+          <Dialog.Close>
+            <Button variant="soft">取消</Button>
+          </Dialog.Close>
+          <Button onClick={save}>保存</Button>
+        </Flex>
+      </Dialog.Content>
+    </Dialog.Root>
+  );
 }

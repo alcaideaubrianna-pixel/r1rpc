@@ -57,7 +57,7 @@ func (s *Server) registerSearchTaskRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/search-task-items", s.requireRole("admin", func(w http.ResponseWriter, r *http.Request, _ *auth.Claims) {
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		pageSize, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
-		result, err := s.App.SearchTasks.ListIndependentItems(r.Context(), page, pageSize)
+		result, err := s.App.SearchTasks.ListIndependentItems(r.Context(), page, pageSize, r.URL.Query().Get("q"))
 		if err != nil {
 			writeError(w, 500, err)
 			return
