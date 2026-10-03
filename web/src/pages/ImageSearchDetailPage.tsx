@@ -117,6 +117,8 @@ export default function ImageSearchDetailPage() {
 
 function SourceImageResult({ image, displayIndex, item, candidates, bestScore, requestStatus }: { image: SourceImage; displayIndex: number; item?: SearchItem; candidates: SearchCandidate[]; bestScore: number; requestStatus: string }) {
   const blocked = image.filterDecision === 'blocked'
+  const [candidateLimit, setCandidateLimit] = useState(20)
+  const visibleCandidates = candidates.slice(0, candidateLimit)
   return <section className="source-result-row">
     <div className="source-result-aside">
       <Text as="div" size="1" weight="bold" color="gray">源图片 #{displayIndex + 1}</Text>
@@ -135,7 +137,8 @@ function SourceImageResult({ image, displayIndex, item, candidates, bestScore, r
     <div className="source-result-candidates">
       <Flex justify="between" align="center" mb="2"><Text size="1" weight="bold" color="gray">该图片的搜索结果</Text>{bestScore > 0 && <Text size="1" color="gray">最高 {formatScore(bestScore)}</Text>}</Flex>
       <Flex direction="column" gap="2">
-        {candidates.map((candidate) => <CandidateResult key={candidate.id} candidate={candidate} />)}
+        {visibleCandidates.map((candidate) => <CandidateResult key={candidate.id} candidate={candidate} />)}
+        {candidateLimit < candidates.length && <Button variant="soft" color="gray" onClick={() => setCandidateLimit((limit) => limit + 20)}>加载更多（剩余 {candidates.length - candidateLimit} 条）</Button>}
         {candidates.length === 0 && <div className="empty-result"><Text color="gray">{blocked ? '图片命中 OCR 规则，未提交设备搜索' : terminalSearchStatuses.has(requestStatus) ? '该图片没有候选结果' : '等待该图片的搜索结果…'}</Text></div>}
       </Flex>
     </div>
