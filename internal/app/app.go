@@ -471,6 +471,9 @@ func (a *App) InvokeRPC(ctx context.Context, claims *auth.Claims, groupName, act
 	defer cancel()
 
 	result, actualClientID, err := a.Hub.Invoke(invokeCtx, groupName, req.ClientID, job)
+	if err == nil && (!strings.EqualFold(result.Status, "success") || strings.TrimSpace(result.Error) != "") {
+		err = fmt.Errorf("设备调用失败: status=%s error=%s", result.Status, result.Error)
+	}
 	if actualClientID != "" {
 		requestRecord.ClientID = actualClientID
 		baseTask.ClientID = actualClientID

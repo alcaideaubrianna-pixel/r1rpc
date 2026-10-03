@@ -16,6 +16,39 @@ import (
 )
 
 type Service struct{}
+
+type IndependentItem struct {
+	ID                   string    `json:"id"`
+	SearchTaskID         string    `json:"searchTaskId"`
+	SourceNoteID         string    `json:"sourceNoteId"`
+	ExternalID           string    `json:"externalId"`
+	PlainText            string    `json:"plainText"`
+	Status               string    `json:"status"`
+	PreprocessStatus     string    `json:"preprocessStatus"`
+	FilterStatus         string    `json:"filterStatus"`
+	FilterReason         string    `json:"filterReason"`
+	ImageSearchRequestID string    `json:"imageSearchRequestId"`
+	ImageTotal           int       `json:"imageTotal"`
+	ImageCompleted       int       `json:"imageCompleted"`
+	ImageRunning         int       `json:"imageRunning"`
+	ImageQueued          int       `json:"imageQueued"`
+	ImageFailed          int       `json:"imageFailed"`
+	ProgressPercent      int       `json:"progressPercent"`
+	Matched              int       `json:"matched"`
+	BestScore            float64   `json:"bestScore"`
+	ErrorMessage         string    `json:"errorMessage"`
+	DurationMS           int64     `json:"durationMs"`
+	CreatedAt            time.Time `json:"createdAt"`
+	UpdatedAt            time.Time `json:"updatedAt"`
+}
+
+type IndependentItemPage struct {
+	Items      []IndependentItem `json:"items"`
+	Page       int               `json:"page"`
+	PageSize   int               `json:"pageSize"`
+	Total      int64             `json:"total"`
+	TotalPages int               `json:"totalPages"`
+}
 type ConfigInput struct {
 	ID               string   `json:"id"`
 	Name             string   `json:"name"`
@@ -184,6 +217,150 @@ func (s *Service) ListItems(ctx context.Context, taskID string, page, pageSize i
 		return nil, err
 	}
 	return &ItemPage{Items: rows, Task: task, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
+}
+
+func (s *Service) ListIndependentItems(ctx context.Context, page, pageSize int) (*IndependentItemPage, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	columns := dao.SearchTaskItems.Columns()
+	model := dao.SearchTaskItems.Ctx(ctx)
+	total, err := model.Count()
+	if err != nil {
+		return nil, err
+	}
+	var rows []entity.SearchTaskItems
+	if err = model.OrderDesc(columns.CreatedAt).Page(page, pageSize).Scan(&rows); err != nil {
+		return nil, err
+	}
+	for _, taskID := range uniqueTaskIDs(rows) {
+		if err = s.refreshTask(ctx, taskID); err != nil {
+			return nil, err
+		}
+	}
+	if len(rows) > 0 {
+		if err = model.OrderDesc(columns.CreatedAt).Page(page, pageSize).Scan(&rows); err != nil {
+			return nil, err
+		}
+	}
+	notes, err := loadNotes(ctx, rows)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]IndependentItem, 0, len(rows))
+	for _, row := range rows {
+		item := IndependentItem{
+			ID: row.Id, SearchTaskID: row.SearchTaskId, SourceNoteID: row.SourceNoteId,
+			ExternalID: row.ExternalId, Status: row.Status, PreprocessStatus: row.PreprocessStatus,
+			FilterStatus: row.FilterStatus, FilterReason: row.FilterReason,
+			ImageSearchRequestID: row.ImageSearchRequestId, Matched: row.Matched,
+			BestScore: row.BestScore, ErrorMessage: row.ErrorMessage,
+			CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		}
+		if note, ok := notes[row.SourceNoteId]; ok {
+			item.PlainText = note.PlainText
+			if item.ExternalID == "" {
+				item.ExternalID = note.ExternalNoteId
+			}
+		}
+		if row.ImageSearchRequestId != "" {
+			if err = fillImageProgress(ctx, &item); err != nil {
+				return nil, err
+			}
+		}
+		finishedAt := item.UpdatedAt
+		if !isTerminalSearchStatus(item.Status) {
+			finishedAt = time.Now()
+		}
+		item.DurationMS = finishedAt.Sub(item.CreatedAt).Milliseconds()
+		items = append(items, item)
+	}
+	return &IndependentItemPage{Items: items, Page: page, PageSize: pageSize, Total: int64(total), TotalPages: (total + pageSize - 1) / pageSize}, nil
+}
+
+func uniqueTaskIDs(rows []entity.SearchTaskItems) []string {
+	seen := make(map[string]struct{}, len(rows))
+	result := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if _, ok := seen[row.SearchTaskId]; ok {
+			continue
+		}
+		seen[row.SearchTaskId] = struct{}{}
+		result = append(result, row.SearchTaskId)
+	}
+	return result
+}
+
+func loadNotes(ctx context.Context, rows []entity.SearchTaskItems) (map[string]entity.SourceNotes, error) {
+	result := make(map[string]entity.SourceNotes, len(rows))
+	if len(rows) == 0 {
+		return result, nil
+	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.SourceNoteId)
+	}
+	var notes []entity.SourceNotes
+	if err := dao.SourceNotes.Ctx(ctx).WhereIn(dao.SourceNotes.Columns().Id, ids).Scan(&notes); err != nil {
+		return nil, err
+	}
+	for _, note := range notes {
+		result[note.Id] = note
+	}
+	return result, nil
+}
+
+func fillImageProgress(ctx context.Context, item *IndependentItem) error {
+	groupColumns := dao.ImageSearchGroups.Columns()
+	var groups []entity.ImageSearchGroups
+	if err := dao.ImageSearchGroups.Ctx(ctx).Fields(groupColumns.Id).
+		Where(groupColumns.RequestId, item.ImageSearchRequestID).Scan(&groups); err != nil {
+		return err
+	}
+	if len(groups) == 0 {
+		return nil
+	}
+	groupIDs := make([]string, 0, len(groups))
+	for _, group := range groups {
+		groupIDs = append(groupIDs, group.Id)
+	}
+	var images []entity.ImageSearchItems
+	imageColumns := dao.ImageSearchItems.Columns()
+	if err := dao.ImageSearchItems.Ctx(ctx).WhereIn(imageColumns.GroupId, groupIDs).Scan(&images); err != nil {
+		return err
+	}
+	item.ImageTotal = len(images)
+	for _, image := range images {
+		switch image.Status {
+		case "matched", "not_matched", "search_completed", "completed", "cancelled":
+			item.ImageCompleted++
+		case "failed":
+			item.ImageFailed++
+			if item.ErrorMessage == "" {
+				item.ErrorMessage = image.ErrorMessage
+			}
+		case "running", "analyzing":
+			item.ImageRunning++
+		default:
+			item.ImageQueued++
+		}
+	}
+	if item.ImageTotal > 0 {
+		item.ProgressPercent = (item.ImageCompleted + item.ImageFailed) * 100 / item.ImageTotal
+	}
+	return nil
+}
+
+func isTerminalSearchStatus(status string) bool {
+	switch status {
+	case "completed", "partial_failed", "failed", "cancelled", "filtered", "matched", "not_matched":
+		return true
+	default:
+		return false
+	}
 }
 func (s *Service) refreshTask(ctx context.Context, taskID string) error {
 	var items []entity.SearchTaskItems

@@ -120,7 +120,8 @@ func (e *Enqueuer) enqueue(ctx context.Context, taskType, queue, jobID string) e
 	options := []asynq.Option{
 		asynq.Queue(queue),
 		asynq.MaxRetry(5),
-		asynq.Timeout(2 * time.Minute),
+		// 一个图片任务包含上传和搜图两次设备 RPC，并为断联检测和状态持久化留出余量。
+		asynq.Timeout(5 * time.Minute),
 	}
 	if taskType == TaskTypeImageProcess {
 		options = append(options, asynq.Unique(10*time.Minute))

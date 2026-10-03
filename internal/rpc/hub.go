@@ -73,7 +73,6 @@ type waiterEntry struct {
 	SessionGeneration  uint64
 	SessionIncarnation string
 	ResultCh           chan JobResult
-	DisconnectNotified bool
 	DeadlineAt         time.Time
 }
 
@@ -89,6 +88,12 @@ type ExecutionLease struct {
 	ExpiresAt          time.Time
 	SentAt             time.Time
 	queue              JobQueue
+}
+
+// WorkflowLease 在多个 RPC 调用之间独占一台设备，避免同一设备交错执行不同图片任务。
+type WorkflowLease struct {
+	ClientID string
+	Token    string
 }
 
 type completedEntry struct {
@@ -141,6 +146,7 @@ type Hub struct {
 	waiters            map[string]waiterEntry
 	completed          map[string]completedEntry
 	executionLeases    map[string]*ExecutionLease
+	workflowLeases     map[string]string
 	leaseDuration      time.Duration
 	executionGrace     time.Duration
 	reaperInterval     time.Duration
@@ -193,6 +199,7 @@ func NewHubWithExecutionTiming(pendingSize, defaultMaxInFlight int, leaseDuratio
 		waiters:            map[string]waiterEntry{},
 		completed:          map[string]completedEntry{},
 		executionLeases:    map[string]*ExecutionLease{},
+		workflowLeases:     map[string]string{},
 		leaseDuration:      leaseDuration,
 		executionGrace:     executionGrace,
 		reaperInterval:     reaperInterval,
@@ -619,12 +626,69 @@ func (h *Hub) unregisterSessionLocked(session *ClientSession) error {
 		return err
 	}
 	delete(h.sessions, session.ClientID)
+	delete(h.workflowLeases, session.ClientID)
 	h.removeClientFromGroup(session.Group, session.ClientID)
 	h.signalDispatchLocked(session)
 	if session.Pending.Len() == 0 {
 		h.queueIdleSince[session.ClientID] = h.clock()
 	}
 	return nil
+}
+
+// AcquireWorkflowLease 以轮询方式为完整业务工作流预留一台支持全部 action 的在线设备。
+func (h *Hub) AcquireWorkflowLease(group string, actions ...string) (*WorkflowLease, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	order := h.groupOrder[group]
+	if len(order) == 0 {
+		return nil, ErrNoOnlineClient
+	}
+	start := h.groupCursor[group]
+	if start >= len(order) {
+		start = 0
+	}
+	sawCapable := false
+	for offset := 0; offset < len(order); offset++ {
+		idx := (start + offset) % len(order)
+		clientID := order[idx]
+		session, ok := h.sessions[clientID]
+		if !ok || session.Group != group {
+			continue
+		}
+		capable := true
+		for _, action := range actions {
+			if !sessionSupportsAction(session, action) {
+				capable = false
+				break
+			}
+		}
+		if !capable {
+			continue
+		}
+		sawCapable = true
+		if _, busy := h.workflowLeases[clientID]; busy {
+			continue
+		}
+		token := newOpaqueID("workflow_")
+		h.workflowLeases[clientID] = token
+		h.groupCursor[group] = (idx + 1) % len(order)
+		return &WorkflowLease{ClientID: clientID, Token: token}, nil
+	}
+	if !sawCapable {
+		return nil, ErrNoCapableClient
+	}
+	return nil, ErrGroupSaturated
+}
+
+func (h *Hub) ReleaseWorkflowLease(lease *WorkflowLease) {
+	if lease == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.workflowLeases[lease.ClientID] == lease.Token {
+		delete(h.workflowLeases, lease.ClientID)
+	}
 }
 
 func (h *Hub) unregisterCurrentLocked(clientID string, generation uint64) error {
@@ -1092,6 +1156,9 @@ func (h *Hub) pickSession(group, preferredClient, action string) (*ClientSession
 		if session.Pending.Len() >= session.Pending.Cap() {
 			continue
 		}
+		if _, busy := h.workflowLeases[clientID]; busy {
+			continue
+		}
 		h.groupCursor[group] = (idx + 1) % len(order)
 		return session, nil
 	}
@@ -1213,9 +1280,6 @@ func (h *Hub) Sweep(now time.Time) int {
 		}
 		delete(h.waiters, requestID)
 		h.completed[requestID] = completedEntry{ClientID: waiter.ClientID, SessionGeneration: waiter.SessionGeneration, SessionIncarnation: waiter.SessionIncarnation, State: "expired", FinishedAt: now}
-		if waiter.DisconnectNotified {
-			continue
-		}
 		select {
 		case waiter.ResultCh <- JobResult{RequestID: requestID, Status: "error", HTTPCode: 504, Error: "任务已过期"}:
 		default:
@@ -1401,16 +1465,13 @@ func (h *Hub) ActionLimit(clientID, action string) (int, bool) {
 }
 
 func (h *Hub) terminateSessionLocked(session *ClientSession, reason string) error {
-	var requeueErrors []error
+	var terminateErrors []error
 	for requestID, lease := range h.executionLeases {
 		if lease.ClientID != session.ClientID || lease.SessionIncarnation != session.SessionIncarnation {
 			continue
 		}
-		requeueReason := reason
-		if !lease.SentAt.IsZero() {
-			requeueReason += "_after_send_at_least_once"
-		}
-		err := lease.queue.RequeueDelivery(lease.Delivery, requeueReason)
+		// 设备断联后的重试由持久化业务任务统一负责，RPC 层不得再次投递旧调用。
+		err := lease.queue.Ack(lease.Delivery)
 		switch {
 		case err == nil, errors.Is(err, ErrLeaseExpired), errors.Is(err, ErrLeaseNotFound):
 			h.releaseExecutionLeaseLocked(requestID)
@@ -1418,27 +1479,24 @@ func (h *Hub) terminateSessionLocked(session *ClientSession, reason string) erro
 			h.releaseExecutionLeaseLocked(requestID)
 			h.finishExpiredWaiterLocked(lease, h.clock())
 		default:
-			requeueErrors = append(requeueErrors, err)
+			terminateErrors = append(terminateErrors, err)
 		}
 	}
 	for requestID, waiter := range h.waiters {
 		if waiter.ClientID != session.ClientID || waiter.SessionIncarnation != session.SessionIncarnation {
 			continue
 		}
-		if waiter.DisconnectNotified {
-			continue
-		}
+		delete(h.waiters, requestID)
+		h.completed[requestID] = completedEntry{ClientID: session.ClientID, SessionGeneration: waiter.SessionGeneration, SessionIncarnation: waiter.SessionIncarnation, State: "completed", FinishedAt: h.clock()}
 		select {
 		case waiter.ResultCh <- JobResult{RequestID: requestID, Status: "error", HTTPCode: 503, Error: reason}:
-			waiter.DisconnectNotified = true
-			h.waiters[requestID] = waiter
 		default:
 		}
 	}
 	session.InFlight = 0
 	session.ActionInFlight = map[string]int{}
 	h.signalDispatchLocked(session)
-	return errors.Join(requeueErrors...)
+	return errors.Join(terminateErrors...)
 }
 
 func (h *Hub) signalDispatchLocked(session *ClientSession) {

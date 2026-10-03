@@ -12,6 +12,7 @@ import (
 	"r1rpc/internal/dao"
 	"r1rpc/internal/model/do"
 	"r1rpc/internal/model/entity"
+	"r1rpc/internal/rpc"
 
 	"github.com/gogf/gf/v2/database/gdb"
 	"github.com/gogf/gf/v2/errors/gerror"
@@ -42,6 +43,11 @@ func (p *Processor) ProcessImageJob(ctx context.Context, task *asynq.Task) error
 	if job.Source == "image_search" && (job.Stage == "response_received" || job.Stage == "analyzing") {
 		return p.enqueuer.EnqueueImageAnalysis(ctx, job.Id)
 	}
+	workflow, err := p.acquireDeviceWorkflow(ctx)
+	if err != nil {
+		return p.markRetry(ctx, job.Id, "DEVICE_UNAVAILABLE", err)
+	}
+	defer p.app.Hub.ReleaseWorkflowLease(workflow)
 	attempt, err := p.markRunning(ctx, job.Id, "uploading_to_device")
 	if err != nil {
 		return err
@@ -52,6 +58,7 @@ func (p *Processor) ProcessImageJob(ctx context.Context, task *asynq.Task) error
 
 	upload, uploadRequestID, clientID, err := p.app.InvokeRPC(ctx, nil, app.DeviceGroup, "media.upload_image", app.InvokeRequest{
 		RequestID: stageRequestID(job.Id, "u", attempt),
+		ClientID:  workflow.ClientID,
 		Payload: mustJSON(map[string]any{
 			"image":   map[string]any{"fileId": asset.FileId},
 			"purpose": "image_search",
@@ -95,6 +102,25 @@ func (p *Processor) ProcessImageJob(ctx context.Context, task *asynq.Task) error
 		return err
 	}
 	return p.refreshBatch(ctx, job.BatchId)
+}
+
+func (p *Processor) acquireDeviceWorkflow(ctx context.Context) (*rpc.WorkflowLease, error) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		lease, err := p.app.Hub.AcquireWorkflowLease(app.DeviceGroup, "media.upload_image", "content.search_by_image")
+		if err == nil {
+			return lease, nil
+		}
+		if !errors.Is(err, rpc.ErrNoOnlineClient) && !errors.Is(err, rpc.ErrNoCapableClient) && !errors.Is(err, rpc.ErrGroupSaturated) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (p *Processor) markResponseReceived(ctx context.Context, jobID, requestID string, response json.RawMessage) error {
@@ -167,21 +193,30 @@ func (p *Processor) markRetry(ctx context.Context, jobID, code string, cause err
 		}
 		return cause
 	}
-	_, _ = dao.ImageJobs.Ctx(ctx).Where(dao.ImageJobs.Columns().Id, jobID).Data(do.ImageJobs{
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	_, updateErr := dao.ImageJobs.Ctx(persistCtx).Where(dao.ImageJobs.Columns().Id, jobID).Data(do.ImageJobs{
 		Status: "retry_wait", Stage: "retry_wait", ErrorCode: code, ErrorMessage: cause.Error(),
 	}).Update()
-	_ = p.syncSearchJob(ctx, jobID, "retry_wait", code, cause.Error())
+	if updateErr != nil {
+		return errors.Join(cause, updateErr)
+	}
+	if syncErr := p.syncSearchJob(persistCtx, jobID, "retry_wait", code, cause.Error()); syncErr != nil {
+		return errors.Join(cause, syncErr)
+	}
 	return cause
 }
 
 func (p *Processor) markFailed(ctx context.Context, jobID, code, message string) error {
-	_, err := dao.ImageJobs.Ctx(ctx).Where(dao.ImageJobs.Columns().Id, jobID).Data(do.ImageJobs{
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	_, err := dao.ImageJobs.Ctx(persistCtx).Where(dao.ImageJobs.Columns().Id, jobID).Data(do.ImageJobs{
 		Status: "failed", Stage: "failed", ErrorCode: code, ErrorMessage: message, FinishedAt: time.Now(),
 	}).Update()
 	if err != nil {
 		return err
 	}
-	return p.syncSearchJob(ctx, jobID, "failed", code, message)
+	return p.syncSearchJob(persistCtx, jobID, "failed", code, message)
 }
 
 func (p *Processor) refreshBatch(ctx context.Context, batchID string) error {

@@ -67,6 +67,36 @@ func TestAcquireExecutionLeaseEnforcesDeviceAndActionLimits(t *testing.T) {
 	}
 }
 
+func TestWorkflowLeaseDistributesOneTaskPerDevice(t *testing.T) {
+	hub := NewHub(8, 1)
+	hub.RegisterCapabilities("device-1", "devices", 1, "ios", 1, true, []string{"media.upload_image", "content.search_by_image"})
+	hub.RegisterCapabilities("device-2", "devices", 2, "ios", 1, true, []string{"media.upload_image", "content.search_by_image"})
+
+	first, err := hub.AcquireWorkflowLease("devices", "media.upload_image", "content.search_by_image")
+	if err != nil {
+		t.Fatalf("acquire first workflow: %v", err)
+	}
+	second, err := hub.AcquireWorkflowLease("devices", "media.upload_image", "content.search_by_image")
+	if err != nil {
+		t.Fatalf("acquire second workflow: %v", err)
+	}
+	if first.ClientID == second.ClientID {
+		t.Fatalf("workflow leases share device %q", first.ClientID)
+	}
+	if _, err = hub.AcquireWorkflowLease("devices", "media.upload_image", "content.search_by_image"); !errors.Is(err, ErrGroupSaturated) {
+		t.Fatalf("third workflow error=%v, want ErrGroupSaturated", err)
+	}
+
+	hub.ReleaseWorkflowLease(first)
+	third, err := hub.AcquireWorkflowLease("devices", "media.upload_image", "content.search_by_image")
+	if err != nil {
+		t.Fatalf("reacquire released workflow: %v", err)
+	}
+	if third.ClientID != first.ClientID {
+		t.Fatalf("reacquired client=%q, want %q", third.ClientID, first.ClientID)
+	}
+}
+
 func TestExecutionLeaseOutlivesCallerDeadlineByGrace(t *testing.T) {
 	start := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
 	clock := newQueueTestClock(start)
@@ -297,18 +327,8 @@ func TestSessionGenerationProtectsReplacementAndDisconnectReclaims(t *testing.T)
 	if newSession.Pending != oldSession.Pending {
 		t.Fatal("replacement did not reuse the client queue")
 	}
-	retried, err := newSession.Pending.Reserve(context.Background(), hub.LeaseDuration())
-	if err != nil {
-		t.Fatalf("reserve replacement retry: %v", err)
-	}
-	if retried.JobID != delivery.JobID || retried.Attempt != delivery.Attempt+1 {
-		t.Fatalf("replacement retry=%+v original=%+v", retried, delivery)
-	}
-	if _, err := hub.AcquireExecutionLease(context.Background(), newSession.ClientID, retried, newSession.Generation); err != nil {
-		t.Fatalf("replacement acquire: %v", err)
-	}
-	if outcome, err := hub.SubmitResult(newSession.ClientID, JobResult{RequestID: retried.Job.RequestID, SessionIncarnation: newSession.SessionIncarnation}); err != nil || !outcome.Delivered {
-		t.Fatalf("replacement result outcome=%+v err=%v", outcome, err)
+	if newSession.Pending.Len() != 0 {
+		t.Fatalf("replacement retained terminal RPC depth=%d", newSession.Pending.Len())
 	}
 
 	hub.UnregisterGeneration("device", oldSession.Generation)
@@ -322,7 +342,7 @@ func TestSessionGenerationProtectsReplacementAndDisconnectReclaims(t *testing.T)
 	}
 }
 
-func TestReplacementRecordsAtLeastOnceRiskAfterPhysicalSend(t *testing.T) {
+func TestReplacementTerminatesPhysicallySentRPC(t *testing.T) {
 	hub := NewHub(8, 1)
 	session := hub.RegisterConnectionCapabilities("device", "group", 0, "test", 1, false, nil)
 	delivery, _ := reserveHubDelivery(t, hub, session, "sent-before-replacement", "action", time.Now().Add(time.Minute))
@@ -340,7 +360,7 @@ func TestReplacementRecordsAtLeastOnceRiskAfterPhysicalSend(t *testing.T) {
 		t.Fatal("queue trace is empty")
 	}
 	last := events[len(events)-1]
-	if last.Type != QueueEventRequeued || last.Reason != "session_replaced_after_send_at_least_once" {
+	if last.Type != QueueEventAcked {
 		t.Fatalf("replacement trace=%+v", last)
 	}
 }
@@ -368,16 +388,12 @@ func TestUnregisterCurrentSessionTerminatesInFlightRequest(t *testing.T) {
 	if replacement.Pending != session.Pending {
 		t.Fatal("reconnect did not retain the disconnected queue")
 	}
-	retried, err := replacement.Pending.Reserve(context.Background(), hub.LeaseDuration())
-	if err != nil {
-		t.Fatalf("reserve reconnect retry: %v", err)
-	}
-	if retried.JobID != delivery.JobID || retried.Attempt != delivery.Attempt+1 {
-		t.Fatalf("reconnect retry=%+v original=%+v", retried, delivery)
+	if replacement.Pending.Len() != 0 {
+		t.Fatalf("reconnect retained terminal RPC depth=%d original=%+v", replacement.Pending.Len(), delivery)
 	}
 }
 
-func TestReadyJobSurvivesDisconnectAndReconnect(t *testing.T) {
+func TestReadyJobBecomesTerminalAfterDisconnect(t *testing.T) {
 	hub := NewHub(8, 1)
 	session := hub.Register("device", "group", 0, "test", 1)
 	job := &Job{RequestID: "ready-disconnect", Group: session.Group, Action: "action", ClientID: session.ClientID, DeadlineAt: time.Now().Add(time.Minute)}
@@ -399,9 +415,10 @@ func TestReadyJobSurvivesDisconnectAndReconnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	if _, err := hub.AcquireExecutionLease(context.Background(), replacement.ClientID, delivery, replacement.Generation); err != nil {
-		t.Fatalf("acquire: %v", err)
+	if _, err := hub.AcquireExecutionLease(context.Background(), replacement.ClientID, delivery, replacement.Generation); !errors.Is(err, ErrRequestTerminal) {
+		t.Fatalf("acquire error=%v, want ErrRequestTerminal", err)
 	}
+	_ = replacement.Pending.Ack(delivery)
 }
 
 func TestDisconnectedReadyJobTerminatesAtDeadline(t *testing.T) {
@@ -430,7 +447,7 @@ func TestDisconnectedReadyJobTerminatesAtDeadline(t *testing.T) {
 	_, waiting := hub.waiters[job.RequestID]
 	completed := hub.completed[job.RequestID]
 	hub.mu.RUnlock()
-	if waiting || completed.State != "expired" {
+	if waiting || completed.State != "completed" {
 		t.Fatalf("waiting=%v completed=%+v", waiting, completed)
 	}
 
@@ -582,9 +599,14 @@ func TestHubQueueRetentionRequiresNoReadyLeasedOrWaiter(t *testing.T) {
 	hub.mu.Lock()
 	hub.cleanupIdleQueuesLocked(clock.Now())
 	hub.mu.Unlock()
-	for _, clientID := range []string{ready.ClientID, leased.ClientID, waiting.ClientID} {
+	for _, clientID := range []string{ready.ClientID, leased.ClientID} {
 		if _, ok := hub.queues[clientID]; !ok {
-			t.Fatalf("queue %q reclaimed with active state", clientID)
+			t.Fatalf("active queue %q was reclaimed", clientID)
+		}
+	}
+	for _, clientID := range []string{waiting.ClientID} {
+		if _, ok := hub.queues[clientID]; ok {
+			t.Fatalf("terminal queue %q was retained", clientID)
 		}
 	}
 }
